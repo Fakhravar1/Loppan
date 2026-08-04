@@ -61,8 +61,8 @@ python loppan/cohort.py check      # weekly. takes a couple of minutes
 Predictions were frozen at enrolment in `data/cohort_manifest.json`. **Do not edit
 the baseline** — the value of this is entirely in having chosen before knowing.
 
-⚠️ The cohort lives in `data/`, which is gitignored, so it exists on one machine
-only. Move it to Postgres before it represents months of elapsed time.
+The cohort is mirrored to Postgres (below). `data/` remains the local write-ahead
+copy, so a database problem can never cost a week of observations.
 
 ## Postgres
 
@@ -75,13 +75,17 @@ RLS is enabled on every table with **no policies**, so the publishable key can
 read and write nothing. The scripts authenticate with the service-role key, read
 from the environment and never committed:
 
-```bash
-export LOPPAN_SUPABASE_KEY="<service_role key from the dashboard>"
+```powershell
+setx LOPPAN_SUPABASE_KEY "<service_role key from the dashboard>"
 ```
 
-Then:
+⚠️ **`setx` only affects processes started afterwards.** An editor or agent that
+was already running keeps the old environment and will report the key as missing
+even though it is set. Either restart it, or pull the value from the user
+environment explicitly:
 
-```bash
+```powershell
+$env:LOPPAN_SUPABASE_KEY = [System.Environment]::GetEnvironmentVariable('LOPPAN_SUPABASE_KEY','User')
 python loppan/load_to_db.py
 ```
 
