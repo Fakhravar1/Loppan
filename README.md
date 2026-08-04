@@ -37,3 +37,29 @@ Both are described in `docs/handover.md` §11–§12.
   the account, not the scraper.
 - **Never submit fabricated data anywhere.** Inherited from the sibling project's
   standing rule, and it applies here too.
+
+## The forward cohort
+
+1,300 items enrolled 2026-08-04 and followed weekly to their outcome. This is the
+project's one live experiment, and it exists because **sell-through cannot be
+recovered from history**: items that sell are removed from the search index, so
+any backward-looking sample sees survivors and failures but never a success.
+
+```bash
+python loppan/cohort.py check      # weekly. takes a couple of minutes
+```
+
+| Stratum | n | Frozen expectation |
+|---|---|---|
+| `circle` | 500 | unknown — **this is the measurement** |
+| `screen` | 150 | sells faster than baseline |
+| `control_unwanted` | 150 | slower than `screen` — same discount, nobody watching |
+| `control_wanted_pricey` | 150 | sells, but slowly |
+| `premium` | 100 | slower — thinner buyer pool at 1,500 kr+ |
+| `baseline` | 250 | the reference rate |
+
+Predictions were frozen at enrolment in `data/cohort_manifest.json`. **Do not edit
+the baseline** — the value of this is entirely in having chosen before knowing.
+
+⚠️ The cohort lives in `data/`, which is gitignored, so it exists on one machine
+only. Move it to Postgres before it represents months of elapsed time.
