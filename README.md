@@ -63,3 +63,34 @@ the baseline** — the value of this is entirely in having chosen before knowing
 
 ⚠️ The cohort lives in `data/`, which is gitignored, so it exists on one machine
 only. Move it to Postgres before it represents months of elapsed time.
+
+## Postgres
+
+Supabase project **`zgqywowejxtokqsybqnu`** (`Loppan`, region `eu-north-1`), free tier.
+
+Tables: `strata` · `cohort_items` · `cohort_checks` · `circle_roundtrips` ·
+`item_ladders`, plus views `v_cohort_status` and `v_cohort_summary`.
+
+RLS is enabled on every table with **no policies**, so the publishable key can
+read and write nothing. The scripts authenticate with the service-role key, read
+from the environment and never committed:
+
+```bash
+export LOPPAN_SUPABASE_KEY="<service_role key from the dashboard>"
+```
+
+Then:
+
+```bash
+python loppan/load_to_db.py
+```
+
+`cohort.py check` syncs automatically once the key is set, and always writes the
+local JSONL first — so a missing or expired key can never cost a week of
+observations.
+
+The whole experiment in one query:
+
+```sql
+select * from public.v_cohort_summary;
+```

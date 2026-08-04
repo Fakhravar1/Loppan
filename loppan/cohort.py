@@ -32,7 +32,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from loppan import search, sellpy
+from loppan import db, search, sellpy
 
 DATA = pathlib.Path(__file__).resolve().parent.parent / "data"
 BASELINE = DATA / "cohort_baseline.jsonl"
@@ -177,6 +177,28 @@ def check() -> None:
     with path.open("w", encoding="utf-8") as fh:
         for res in results:
             fh.write(json.dumps(res, ensure_ascii=False) + "\n")
+
+    # Postgres is the durable copy; the JSONL above is the local fallback so a
+    # missing key never costs a week of observations.
+    if db.configured():
+        rows = [
+            {
+                "item_id": r["item_id"],
+                "checked_on": r["checked_on"],
+                "outcome": "error" if str(r["outcome"]).startswith("error") else r["outcome"],
+                "status": r.get("status"),
+                "final_price": r.get("final_price"),
+                "rungs": r.get("rungs"),
+            }
+            for r in results
+        ]
+        try:
+            print(f"  synced {db.upsert('cohort_checks', rows, 'item_id,checked_on')} rows to Postgres")
+        except Exception as exc:
+            print(f"  Postgres sync FAILED ({exc}) — local file is intact, "
+                  f"re-run `python loppan/load_to_db.py` once fixed", file=sys.stderr)
+    else:
+        print("  (LOPPAN_SUPABASE_KEY not set — saved locally only)", file=sys.stderr)
 
     print(f"\n{'stratum':24s} {'n':>5s} {'listed':>7s} {'sold':>6s} {'expired':>8s}")
     for stratum in STRATA:

@@ -1,0 +1,93 @@
+"""Postgres writes via PostgREST. Stdlib only — no new dependencies.
+
+Credentials come from the environment and are never stored in this repo:
+
+    LOPPAN_SUPABASE_URL   https://zgqywowejxtokqsybqnu.supabase.co
+    LOPPAN_SUPABASE_KEY   the service-role key, from the Supabase dashboard
+                          (Project Settings -> API Keys -> service_role)
+
+The service-role key bypasses row-level security, which is exactly what these
+backend scripts need and exactly why it must never reach a browser, a commit, or
+a log line. Every table has RLS enabled with no policies, so the publishable key
+can read and write nothing.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import urllib.error
+import urllib.request
+
+PROJECT_REF = "zgqywowejxtokqsybqnu"
+DEFAULT_URL = f"https://{PROJECT_REF}.supabase.co"
+BATCH = 500
+
+
+class NotConfigured(RuntimeError):
+    pass
+
+
+def _creds() -> tuple[str, str]:
+    url = os.environ.get("LOPPAN_SUPABASE_URL", DEFAULT_URL).rstrip("/")
+    key = os.environ.get("LOPPAN_SUPABASE_KEY")
+    if not key:
+        raise NotConfigured(
+            "LOPPAN_SUPABASE_KEY is not set.\n"
+            "  Get the service_role key from the Supabase dashboard:\n"
+            f"    https://supabase.com/dashboard/project/{PROJECT_REF}/settings/api-keys\n"
+            "  Then, in PowerShell:\n"
+            '    $env:LOPPAN_SUPABASE_KEY = "<the key>"\n'
+            "  Add it to your user environment variables to make it stick."
+        )
+    return url, key
+
+
+def configured() -> bool:
+    return bool(os.environ.get("LOPPAN_SUPABASE_KEY"))
+
+
+def upsert(table: str, rows: list[dict], on_conflict: str | None = None) -> int:
+    """Insert rows, updating any that already exist. Chunked to keep requests sane."""
+    if not rows:
+        return 0
+    url, key = _creds()
+    written = 0
+
+    for start in range(0, len(rows), BATCH):
+        chunk = rows[start : start + BATCH]
+        endpoint = f"{url}/rest/v1/{table}"
+        if on_conflict:
+            endpoint += f"?on_conflict={on_conflict}"
+        req = urllib.request.Request(
+            endpoint,
+            data=json.dumps(chunk, ensure_ascii=False).encode(),
+            headers={
+                "apikey": key,
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "Prefer": "resolution=merge-duplicates,return=minimal",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                resp.read()
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                f"{table}: HTTP {exc.code} — {exc.read().decode()[:300]}"
+            ) from exc
+        written += len(chunk)
+
+    return written
+
+
+def query(path: str) -> list[dict]:
+    """Read back via PostgREST, e.g. query('v_cohort_summary?select=*')."""
+    url, key = _creds()
+    req = urllib.request.Request(
+        f"{url}/rest/v1/{path}",
+        headers={"apikey": key, "Authorization": f"Bearer {key}"},
+    )
+    with urllib.request.urlopen(req) as resp:
+        return json.load(resp)
