@@ -232,7 +232,7 @@ def check() -> None:
                 out["outcome"] = f"error:{type(exc).__name__}"
         results.append(out)
 
-    CHECKS.mkdir(exist_ok=True)
+    CHECKS.mkdir(parents=True, exist_ok=True)  # data/ does not exist on a fresh runner
     path = CHECKS / f"check_{today}.jsonl"
     with path.open("w", encoding="utf-8") as fh:
         for res in results:
