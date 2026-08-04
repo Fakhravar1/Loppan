@@ -122,3 +122,77 @@ undocumented endpoints being used outside a browser, so the constraint is
 self-imposed: one request per second (`sellpy.MIN_INTERVAL_S`), no distributed
 crawling, no redistribution of the data, one account. The exposure that matters
 isn't the scraper breaking — it's the account.
+
+---
+
+# The Typesense search index — added 2026-08-04
+
+Everything above describes Parse, which cannot filter by price, brand or date and
+tops out around 9,000 rows. The search index has none of those limits and carries
+fields that exist nowhere in the Parse objects. **This is the primary surface.**
+
+Config comes from the GraphQL query `getTypesenseClientConfig` (see
+`loppan/search.py`, which fetches it at runtime rather than hardcoding it). The
+key is scoped and search-only — every visitor's browser holds the same one.
+
+Collection: **`market_items`**, **584,041 documents**, of which **529,742 are on
+shelf**. Deep pagination works (verified to page 150). Reading the collection
+schema is forbidden to a search-only key, so fields were discovered by inspecting
+returned documents and probing filter names.
+
+## Fields that matter, and are absent from Parse
+
+| Field | Note |
+|---|---|
+| **`priceToEstimateRatio`** | **Sellpy's own current-price ÷ their value estimate.** The single most useful field found. |
+| **`favouriteCount`** / `regularFavouriteCount` | Demand signal. Filterable but **not sortable**. |
+| **`lastChance`** | Boolean — the item is near end of life. Powers `/store/selection/last-chance-items`. |
+| **`price_SE`** | `{amount, currency}` — **amount is in ÖRE**. Filter path is `price_SE.amount`. 200000 = 2,000 kr. |
+| `priceDrop_SE` | Present, usually null; not yet characterised. |
+| `brandClassification.pricePoint` | Sellpy's brand price tier, 1–6. |
+| `brandClassification` | Also `aestheticTone`, `ethos`, `originVibe`, `styles`, `ageGroups` — evidently LLM-generated. |
+| `saleStartedAt`, `firstOfferedAt_SE` | Listing timestamps. |
+| `isOnShelf`, `isReserved`, `saleType`, `p2p` | `p2p:true` = **a Circle listing**. |
+| `embeddingV2` | A vector embedding per item. Similar-item search without any image work. |
+| `keywords_sv`, `concept`, `style_sv` | Generated descriptive tags. |
+
+**No price field is exposed at the top level** — `price` / `currentPrice` /
+`salePrice` all 404. It is `price_SE.amount`, and it is in öre.
+
+## Population, measured 2026-08-04
+
+| Segment | Count |
+|---|---|
+| On shelf | 529,742 |
+| **≥ 2,000 kr** | **700** |
+| 1,500–2,000 kr | 1,562 |
+| < 400 kr | 487,705 (92%) |
+| **Circle listings (`p2p:true`)** | **15,008** (2,310 on shelf) |
+| Circle + premium brand | 1,134 |
+| Premium brand (tier ≥4) | 137,243 |
+| `lastChance` on shelf | 12,389 — **none priced ≥1,000 kr** |
+| `priceToEstimateRatio` < 0.5 | 61,975 |
+| ≥5 favourites | 96,043 |
+| ≥20 favourites | 13,317 |
+
+Brand counts for the four known trades: COS 2,601 · Carhartt WIP 322 ·
+Dr. Martens 251 · Ambika 56.
+
+## Recommended workflow
+
+1. **Select** with the search index — brand, price band, Circle, favourites,
+   price-to-estimate. Cheap, deep, and filterable.
+2. **Enrich** with Parse by item id — the full markdown ladder, warehouse dwell,
+   `sellabilityEstimate`, terminal status. One request per item, so select first.
+
+## Warning about `priceToEstimateRatio`
+
+A low ratio means the current price sits below Sellpy's own estimate. Items start
+at or above the estimate and are marked **down** through the ladder — so a low
+ratio is largely a measure of **how far the item has already been discounted**,
+which is the pattern the four known trades associate with the *worst* returns
+(see handover.md, Idea 4). Do not read it as "underpriced" on its own.
+
+Combined with `favouriteCount` it is more interesting: heavily discounted **and**
+widely favourited separates "cheap because nobody wants it" from "cheap and
+wanted". That distinction was not measurable at all before this index.
