@@ -28,9 +28,21 @@ class NotConfigured(RuntimeError):
     pass
 
 
+def _clean(value: str | None) -> str | None:
+    """Strip whitespace and a leading BOM.
+
+    Piping a secret through PowerShell prepends a UTF-8 BOM, which then cannot be
+    encoded into an HTTP header and fails with a latin-1 codec error that says
+    nothing about the real cause. Copy-paste via a dashboard likewise tends to
+    bring a trailing newline. Neither should cost anyone an hour.
+    """
+    return value.strip().lstrip("﻿").strip() if value else value
+
+
 def _creds() -> tuple[str, str]:
-    url = os.environ.get("LOPPAN_SUPABASE_URL", DEFAULT_URL).rstrip("/")
-    key = os.environ.get("LOPPAN_SUPABASE_KEY")
+    url = _clean(os.environ.get("LOPPAN_SUPABASE_URL")) or DEFAULT_URL
+    url = url.rstrip("/")
+    key = _clean(os.environ.get("LOPPAN_SUPABASE_KEY"))
     if not key:
         raise NotConfigured(
             "LOPPAN_SUPABASE_KEY is not set.\n"
