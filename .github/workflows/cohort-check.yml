@@ -1,0 +1,55 @@
+name: cohort check
+
+# Follows the enrolled items to their outcomes. Reads the cohort from Postgres
+# rather than the repo, so the runner needs no local state.
+#
+# Daily rather than weekly: the check is cheap and gets cheaper (resolved items
+# are skipped forever after), and a finer grid gives better resolution on
+# time-to-sell, which is one of the things being measured.
+
+on:
+  schedule:
+    - cron: "20 5 * * *"   # 05:20 UTC daily, a quiet hour for Sellpy
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner to use
+        type: choice
+        default: ubuntu-latest
+        options: [ubuntu-latest]
+
+concurrency:
+  group: cohort-check
+  cancel-in-progress: false   # never let a new run interrupt one mid-write
+
+jobs:
+  check:
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # No dependencies to install: the client is stdlib-only by design.
+      - name: Run the check
+        env:
+          LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
+        run: |
+          if [ -z "$LOPPAN_SUPABASE_KEY" ]; then
+            echo "::error::LOPPAN_SUPABASE_KEY is not set. Without it the run cannot"
+            echo "::error::read the cohort or persist outcomes, so it would silently do nothing."
+            exit 1
+          fi
+          python loppan/cohort.py check
+
+      - name: Keep the local outcome files as an artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cohort-check-${{ github.run_number }}
+          path: data/cohort_checks/
+          if-no-files-found: ignore
+          retention-days: 90

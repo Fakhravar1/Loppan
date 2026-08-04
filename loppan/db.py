@@ -82,12 +82,34 @@ def upsert(table: str, rows: list[dict], on_conflict: str | None = None) -> int:
     return written
 
 
-def query(path: str) -> list[dict]:
-    """Read back via PostgREST, e.g. query('v_cohort_summary?select=*')."""
+PAGE = 1000
+
+
+def query(path: str, paginate: bool = True) -> list[dict]:
+    """Read back via PostgREST, e.g. query('v_cohort_summary?select=*').
+
+    PostgREST caps a response at 1000 rows regardless of any `limit` in the query
+    string, and returns the truncated page without complaining. That silently cost
+    us 300 of 1300 cohort items once, so reads page through Range headers by
+    default rather than trusting a single response to be complete.
+    """
     url, key = _creds()
-    req = urllib.request.Request(
-        f"{url}/rest/v1/{path}",
-        headers={"apikey": key, "Authorization": f"Bearer {key}"},
-    )
-    with urllib.request.urlopen(req) as resp:
-        return json.load(resp)
+    rows: list[dict] = []
+    offset = 0
+
+    while True:
+        req = urllib.request.Request(
+            f"{url}/rest/v1/{path}",
+            headers={
+                "apikey": key,
+                "Authorization": f"Bearer {key}",
+                "Range-Unit": "items",
+                "Range": f"{offset}-{offset + PAGE - 1}",
+            },
+        )
+        with urllib.request.urlopen(req) as resp:
+            page = json.load(resp)
+        rows += page
+        if not paginate or len(page) < PAGE:
+            return rows
+        offset += PAGE

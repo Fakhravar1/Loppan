@@ -135,11 +135,68 @@ def snapshot() -> None:
     print("\nRe-run `python loppan/cohort.py check` weekly. Do not edit the baseline.")
 
 
+STATUS_OUTCOME = {
+    "utlagd": "still_listed",
+    "såld": "sold",      # sold, payout to the seller still pending
+    "betald": "sold",    # sold and paid out
+    "vilande": "expired",  # dormant — listed and never sold
+}
+TERMINAL = {"sold", "expired"}
+
+
+def _load_baseline() -> list[dict]:
+    """Postgres first, local file as fallback.
+
+    Reading the cohort from the database is what lets this run on a stateless CI
+    runner, which has no `data/` directory and never will.
+    """
+    if db.configured():
+        try:
+            rows = db.query("cohort_items?select=item_id,stratum&limit=100000")
+            if rows:
+                return rows
+        except Exception as exc:
+            print(f"  could not read cohort from Postgres ({exc}); trying local", file=sys.stderr)
+    if BASELINE.exists():
+        return [json.loads(line) for line in BASELINE.open(encoding="utf-8")]
+    sys.exit("no cohort found in Postgres or locally — run `snapshot` first")
+
+
+def _already_resolved() -> dict[str, str]:
+    """Items whose fate is already known.
+
+    Sold and expired are both terminal, so re-checking them burns requests and
+    can never change the answer. The job therefore gets *cheaper* every run
+    instead of more expensive, and finishes when the last item resolves.
+    """
+    resolved: dict[str, str] = {}
+    if db.configured():
+        try:
+            rows = db.query(
+                "cohort_checks?select=item_id,outcome&outcome=in.(sold,expired)&limit=100000"
+            )
+            resolved.update({r["item_id"]: r["outcome"] for r in rows})
+        except Exception as exc:
+            print(f"  could not read outcomes from Postgres ({exc})", file=sys.stderr)
+    for path in sorted(CHECKS.glob("check_*.jsonl")):
+        for line in path.open(encoding="utf-8"):
+            row = json.loads(line)
+            if row.get("outcome") in TERMINAL:
+                resolved[row["item_id"]] = row["outcome"]
+    return resolved
+
+
 def check() -> None:
-    if not BASELINE.exists():
-        sys.exit("no cohort yet — run `snapshot` first")
-    rows = [json.loads(line) for line in BASELINE.open(encoding="utf-8")]
+    all_rows = _load_baseline()
     today = dt.date.today().isoformat()
+
+    resolved = _already_resolved()
+    rows = [r for r in all_rows if r["item_id"] not in resolved]
+    if resolved:
+        print(f"skipping {len(resolved)} already-resolved items")
+    if not rows:
+        print("every item has resolved — the cohort is complete.")
+        return
 
     # Cheap pass: which are still in the search index at all?
     present: set[str] = set()
@@ -150,7 +207,7 @@ def check() -> None:
         present.update(h["document"]["id"] for h in hits)
 
     vanished = [r for r in rows if r["item_id"] not in present]
-    print(f"{len(rows)} tracked | {len(present)} still in index | {len(vanished)} vanished")
+    print(f"{len(rows)} open | {len(present)} still listed | {len(vanished)} newly vanished")
 
     # Expensive pass, only for the ones that left: ask Parse what happened.
     results = []
@@ -163,7 +220,10 @@ def check() -> None:
                 item = sellpy.item(row["item_id"])
                 status = item.get("itemStatus")
                 out["status"] = status
-                out["outcome"] = {"betald": "sold", "vilande": "expired"}.get(status, status)
+                # 'såld' is sold with payout pending; 'betald' is sold and paid
+                # out. Both are sales. Anything unrecognised is flagged rather
+                # than guessed — a new status has already appeared once.
+                out["outcome"] = STATUS_OUTCOME.get(status, "unknown")
                 ladder = sellpy.ladder(row["item_id"])
                 if ladder:
                     out["final_price"] = ladder[-1]["pricing"]["amount"]
@@ -200,15 +260,22 @@ def check() -> None:
     else:
         print("  (LOPPAN_SUPABASE_KEY not set — saved locally only)", file=sys.stderr)
 
-    print(f"\n{'stratum':24s} {'n':>5s} {'listed':>7s} {'sold':>6s} {'expired':>8s}")
+    # Cumulative view: this run's outcomes plus everything resolved previously.
+    by_item = {r["item_id"]: r["stratum"] for r in all_rows}
+    cumulative: dict[str, str] = dict(resolved)
+    cumulative.update({r["item_id"]: r["outcome"] for r in results})
+
+    print(f"\n{'stratum':24s} {'n':>5s} {'listed':>7s} {'sold':>6s} {'expired':>8s} {'sold %':>7s}")
     for stratum in STRATA:
-        grp = [r for r in results if r["stratum"] == stratum["name"]]
-        if not grp:
-            continue
-        counts = {k: sum(1 for r in grp if r["outcome"] == k)
-                  for k in ("still_listed", "sold", "expired")}
-        print(f"  {stratum['name']:22s} {len(grp):5d} {counts['still_listed']:7d} "
-              f"{counts['sold']:6d} {counts['expired']:8d}")
+        ids_in = [i for i, s in by_item.items() if s == stratum["name"]]
+        counts = {
+            k: sum(1 for i in ids_in if cumulative.get(i) == k)
+            for k in ("still_listed", "sold", "expired")
+        }
+        done = counts["sold"] + counts["expired"]
+        rate = f"{100*counts['sold']/done:.0f}%" if done else "-"
+        print(f"  {stratum['name']:22s} {len(ids_in):5d} {counts['still_listed']:7d} "
+              f"{counts['sold']:6d} {counts['expired']:8d} {rate:>7s}")
     print(f"\nwrote {path}")
 
 
