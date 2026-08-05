@@ -68,11 +68,26 @@ def sweep() -> int:
           f"(~{total//PAGE + 1} requests)")
 
     written, batch, page = 0, [], 1
+    # A live index shifts under a 300-page walk: items sell, prices change, and
+    # unsorted pagination then returns some items twice and skips others. Sorting
+    # on a value that does not change makes the walk stable, and the seen set
+    # catches whatever slips through — Postgres rejects a batch outright if it
+    # contains the same key twice.
+    seen: set[str] = set()
+
     while True:
-        hits = search.search(filter_by=FILTER, per_page=PAGE, page=page).get("hits", [])
+        hits = search.search(
+            filter_by=FILTER, per_page=PAGE, page=page, sort_by="saleStartedAt:asc"
+        ).get("hits", [])
         if not hits:
             break
-        batch += [row_of(h["document"]) for h in hits]
+
+        for hit in hits:
+            row = row_of(hit["document"])
+            if row["item_id"] in seen:
+                continue
+            seen.add(row["item_id"])
+            batch.append(row)
 
         if len(batch) >= BATCH:
             written += db.upsert("catalogue", batch, "item_id")
@@ -83,7 +98,7 @@ def sweep() -> int:
     if batch:
         written += db.upsert("catalogue", batch, "item_id")
 
-    print(f"  wrote {written}")
+    print(f"  wrote {written} distinct items")
     return written
 
 
