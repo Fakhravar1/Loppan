@@ -40,14 +40,15 @@ Both are described in `docs/handover.md` §11–§12.
 
 ## The forward cohort
 
-1,300 items enrolled 2026-08-04 and followed weekly to their outcome. This is the
+1,300 items enrolled 2026-08-04 and followed to their outcome. This is the
 project's one live experiment, and it exists because **sell-through cannot be
 recovered from history**: items that sell are removed from the search index, so
 any backward-looking sample sees survivors and failures but never a success.
 
-```bash
-python loppan/cohort.py check      # weekly. takes a couple of minutes
-```
+**It runs itself** — `.github/workflows/cohort-check.yml`, daily at 05:20 UTC. It
+reads the cohort from Postgres, so the runner needs no local state, and it skips
+items that have already resolved, so it gets cheaper every run and stops when the
+last item resolves. Run it by hand with `python loppan/cohort.py check`.
 
 | Stratum | n | Frozen expectation |
 |---|---|---|
@@ -60,6 +61,22 @@ python loppan/cohort.py check      # weekly. takes a couple of minutes
 
 Predictions were frozen at enrolment in `data/cohort_manifest.json`. **Do not edit
 the baseline** — the value of this is entirely in having chosen before knowing.
+
+### After any enrolment, run the origin backfill
+
+```bash
+python loppan/backfill_circle_origin.py
+```
+
+Sell-through alone cannot say whether a trade is profitable — you also need the
+multiple, and that needs the price the Circle seller *paid*. Every Circle listing
+points back to the item it came from via `preceding`, but that link is not
+captured by the enrolment snapshot. **Run this before tracked Circle items start
+selling**, or you will know what they fetched and never what they cost.
+
+It is idempotent (it only touches rows where `original_id` is null), so re-running
+after any future snapshot is safe and is the intended habit. The result lands in
+`v_circle_outcomes`.
 
 The cohort is mirrored to Postgres (below). `data/` remains the local write-ahead
 copy, so a database problem can never cost a week of observations.
