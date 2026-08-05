@@ -167,3 +167,24 @@ def query(path: str, paginate: bool = True) -> list[dict]:
         if not paginate or len(page) < PAGE:
             return rows
         offset += PAGE
+
+def rpc(name: str, params: dict | None = None):
+    """Call a Postgres function. Aggregates belong in the database, not in a
+    round trip that pulls 84,000 rows out just to average them."""
+    url, key = _creds()
+    req = urllib.request.Request(
+        f"{url}/rest/v1/rpc/{name}",
+        data=json.dumps(params or {}).encode(),
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            body = resp.read().decode()
+            return json.loads(body) if body else None
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"rpc {name}: HTTP {exc.code} — {exc.read().decode()[:300]}") from exc

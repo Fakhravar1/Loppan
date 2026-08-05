@@ -1,0 +1,34 @@
+name: catalogue sweep
+
+# Scores the part of the catalogue worth scoring, so it can be curated rather
+# than browsed. ~84,000 items at 250 per request, roughly 10 minutes — against
+# the 63 minutes a full-catalogue sweep would cost, which is why it is scoped
+# to items at or above 200 kr.
+
+on:
+  schedule:
+    - cron: "40 5 * * *"   # after the cohort check, so both share a quiet hour
+  workflow_dispatch:
+
+concurrency:
+  group: sweep
+  cancel-in-progress: false   # a half-written sweep is worse than a late one
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Sweep and rescore
+        env:
+          LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
+        run: |
+          if [ -z "$LOPPAN_SUPABASE_KEY" ]; then
+            echo "::error::LOPPAN_SUPABASE_KEY is not set — the sweep would collect nothing."
+            exit 1
+          fi
+          python loppan/sweep.py
