@@ -618,11 +618,51 @@ Two design points that matter:
   rather than recorded — otherwise ordinary markdowns would be logged as failures, which is exactly
   backwards for a project studying markdowns.
 
+**Decision (2026-08-05): the threshold is withdrawn as a filter.** `v_candidates` now screens on
+price only — ≥200 kr, no Circle listings, and the editable category exclusions. It went from 11,964
+rows to 83,333. Screening out 85% of the catalogue on an assumption nobody has tested is not a
+defensible default; the ratio still *ranks*, it no longer *excludes*. `worth_x_price` (= 1 ÷ ratio)
+is the working number, since it states the multiple directly — and the target is 5×.
+
+Sobering scale, worth keeping in view: of 83,333 candidates, **122 reach 5× or better** and 11,932
+have positive expected profit at all. If the estimate is sound, 5× buys are roughly 1 in 700. If it
+is not, we do not currently know how to find them at all — which is what `v_ratio_vs_outcome` is
+for.
+
+Side effect that had to be fixed: `expected_profit` can now be negative, and the score multiplied
+negatives by 0.85 for a defect, making a bad item score *higher*. Score is now computed on
+`greatest(expected_profit, 0)`.
+
 **Cost note that unlocked all of this:** `MarketOffer` accepts a *set* of item pointers
 (`{"item": {"$in": [...]}}`) and embeds the full item with `include=item`. 60 items per request,
 verified. That turns "one request per item" — 23 hours for the catalogue — into something
 proportional to daily churn. §5.1's cost objection to collecting `sellabilityEstimate` at scale is
 therefore withdrawn; the cohort took 22 requests.
+
+### 5.4 The cohort price bug, and what was done about it (2026-08-05)
+
+**415 of 1,300 enrolled rows had no price.** `search.price_kr()` returns None when a document has
+no `price_SE` block, and two strata were enrolled with filters that do not imply a Swedish price:
+`baseline` (`isOnShelf:true`, no filter at all) and `circle` (`p2p:true`). The other four filtered
+on `priceToEstimateRatio` or `price_SE.amount` and came through intact.
+
+Selection was never affected — only attribute capture. `loppan/backfill_cohort_prices.py` repairs
+the rows in place from the search index first and `MarketOffer.pricing.amount` second (which is in
+**kronor**, not öre, unlike the index). `circle` is now 500/500.
+
+**126 baseline items cannot be repaired and are not meant to be.** They are `isOnShelf:true`, not
+reserved, not p2p — and carry **no price block in any region**, with no SE `MarketOffer`. They
+cannot be bought, so they can never resolve into a sale or a failure; left as nulls they would sit
+in the denominator forever and quietly deflate the baseline rate that every other stratum is
+measured against.
+
+They are **marked, not replaced.** `cohort_items.ineligible_reason` records why, and
+`v_cohort_summary` now reports `enrolled` (the frozen 250) alongside `eligible` (124) so the
+shortfall is visible instead of hidden. Replacing them would mean re-picking the cohort after
+seeing data, which is the one thing §11's design rules forbid. **Baseline is n=124 for analysis.**
+
+⚠️ `price_to_estimate` is deliberately **not** backfilled. Filling it with a later value would
+misrepresent what was known at enrolment, and per §5.3 the enrolment-time value is unrecoverable.
 
 ### Remaining recon (not done)
 
