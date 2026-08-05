@@ -242,3 +242,54 @@ Currently only `Prylar > Hemelektronik`. Watches are deliberately unaffected:
 wristwatches are `Accessoarer > Armbandsur`, clocks are `Inredning > Prydnad >
 Klockor`. Smartwatches under `Hemelektronik > Mobil & Wearables > Wearables` ARE
 excluded — reverse that if they should count.
+
+---
+
+# Frontend access (added 2026-08-05)
+
+Reads are gated on **Supabase Auth plus an allowlist**. Being signed in is not
+enough on its own — anyone can sign up for a Supabase project, and the curated
+shortlist is the whole edge.
+
+| Caller | Sees |
+|---|---|
+| Anonymous (publishable key) | nothing — every endpoint returns `[]` |
+| Signed in, not allowlisted | nothing |
+| Signed in **and** in `app_users` | everything |
+
+Add a reader: `insert into public.app_users (email, note) values (...)`.
+
+`app_users` deliberately has RLS on and **no policy** — no client should read it.
+`is_allowed()` reaches it as SECURITY DEFINER.
+
+Views are `security_invoker = on`, so they respect the caller's policies instead
+of the view owner's. Without that, selecting through a view bypasses RLS entirely.
+
+**Two things the Supabase linter caught that were genuinely wrong:**
+
+- `refresh_brand_stats()` sat at `/rest/v1/rpc/refresh_brand_stats`, callable by
+  **anon**. Anything in `public` is exposed over REST unless execute is revoked —
+  so this was an unauthenticated endpoint that rebuilt 12,000 rows on demand.
+  Revoked from `public`, `anon` and `authenticated`; only the service role calls it.
+- Several functions had a mutable `search_path`, which lets a caller who can
+  create objects shadow the tables a SECURITY DEFINER function resolves. Pinned.
+
+Run `get_advisors(type=security)` after any schema change. It found both.
+
+## Connecting a frontend
+
+```
+url:  https://zgqywowejxtokqsybqnu.supabase.co
+key:  the PUBLISHABLE key (safe in a browser — it grants nothing without a session)
+```
+
+Sign in, then query. Everything is filterable and sortable:
+
+```
+/rest/v1/v_candidates?order=score.desc&price_kr=gte.400&brand=eq.Ganni
+/rest/v1/v_candidates?cap_binds=is.true&order=expected_profit.desc
+/rest/v1/v_candidates?out_of_season_now=is.true&premium_fibre=is.true
+```
+
+`thumbnail` and `images` are ready-built CDN URLs. Sellpy honours no resize
+parameters, so scale client-side.
