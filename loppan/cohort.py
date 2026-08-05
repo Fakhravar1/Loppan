@@ -144,6 +144,37 @@ STATUS_OUTCOME = {
 TERMINAL = {"sold", "expired"}
 
 
+def _day(value):
+    if isinstance(value, dict):
+        value = value.get("iso")
+    return value[:10] if value else None
+
+
+def _path(ladder: list[dict]) -> dict:
+    """Flatten an item's markdown history into the fields analysis needs."""
+    if not ladder:
+        return {}
+    opening = ladder[0]["pricing"]["amount"]
+    final = ladder[-1]["pricing"]["amount"]
+    listed_on, ended_on = _day(ladder[0]["createdAt"]), _day(ladder[-1].get("endedAt"))
+    days = None
+    if listed_on and ended_on:
+        days = (dt.date.fromisoformat(ended_on) - dt.date.fromisoformat(listed_on)).days
+    return {
+        "opening_ask": opening,
+        "final_price": final,
+        "rungs": len(ladder),
+        "decay": round(1 - final / opening, 3) if opening else None,
+        "listed_on": listed_on,
+        "ended_on": ended_on,
+        "days_on_market": days,
+        "ladder": [
+            {"price": o["pricing"]["amount"], "from": _day(o["createdAt"]), "to": _day(o.get("endedAt"))}
+            for o in ladder
+        ],
+    }
+
+
 def _load_baseline() -> list[dict]:
     """Postgres first, local file as fallback.
 
@@ -224,10 +255,11 @@ def check() -> None:
                 # out. Both are sales. Anything unrecognised is flagged rather
                 # than guessed — a new status has already appeared once.
                 out["outcome"] = STATUS_OUTCOME.get(status, "unknown")
-                ladder = sellpy.ladder(row["item_id"])
-                if ladder:
-                    out["final_price"] = ladder[-1]["pricing"]["amount"]
-                    out["rungs"] = len(ladder)
+                # Capture the whole markdown path, not just where it ended.
+                # "Sold at 200 kr" and "sold at 200 kr after four price cuts"
+                # mean opposite things, and this is the last moment the path is
+                # readable.
+                out.update(_path(sellpy.ladder(row["item_id"])))
             except Exception as exc:
                 out["outcome"] = f"error:{type(exc).__name__}"
         results.append(out)
@@ -247,8 +279,9 @@ def check() -> None:
                 "checked_on": r["checked_on"],
                 "outcome": "error" if str(r["outcome"]).startswith("error") else r["outcome"],
                 "status": r.get("status"),
-                "final_price": r.get("final_price"),
-                "rungs": r.get("rungs"),
+                **{k: r.get(k) for k in (
+                    "opening_ask", "final_price", "rungs", "decay",
+                    "listed_on", "ended_on", "days_on_market", "ladder")},
             }
             for r in results
         ]

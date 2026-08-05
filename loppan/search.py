@@ -118,11 +118,21 @@ def summarise(doc: dict) -> dict:
     shared = doc.get("sharedMetadata") or {}
     translated = doc.get("translatedMetadata_sv") or {}
     brand_class = doc.get("brandClassification") or {}
+    cats = doc.get("categories_sv") or {}
+    deepest = next(
+        (cats[f"lvl{i}"][0] for i in (3, 2, 1, 0) if cats.get(f"lvl{i}")), None
+    )
     return {
         "item_id": doc["id"],
         "url": f"https://www.sellpy.se/item/{doc['id']}",
         "brand": shared.get("brand"),
         "type": translated.get("type"),
+        # Sellpy tags season natively, so the seasonality idea needs no
+        # inference. Present on roughly a fifth of items; null means untagged,
+        # not all-season.
+        "season": translated.get("season"),
+        "category": deepest,
+        "demography": translated.get("demography"),
         "condition": translated.get("condition"),
         "has_defect": bool(translated.get("defects")),
         "price_kr": price_kr(doc),
