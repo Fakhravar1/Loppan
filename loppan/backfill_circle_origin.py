@@ -32,6 +32,13 @@ def _day(value):
     return value[:10] if value else None
 
 
+# PostgREST rejects a batch whose objects do not all carry the same keys
+# ("All object keys must match"), so every row is built from this shape with
+# explicit nulls rather than by omitting fields.
+FIELDS = ("item_id", "original_id", "bought_price", "bought_on",
+          "original_opening", "original_rungs", "bought_discount")
+
+
 def origin_of(circle_id: str) -> dict | None:
     """What the seller paid, and how marked-down the item was when they bought."""
     circle = sellpy.item(circle_id)
@@ -39,22 +46,24 @@ def origin_of(circle_id: str) -> dict | None:
     if not preceding:
         return None
 
-    original_id = preceding["objectId"]
-    ladder = sellpy.ladder(original_id)
+    row = dict.fromkeys(FIELDS)
+    row["item_id"] = circle_id
+    row["original_id"] = preceding["objectId"]
+
+    ladder = sellpy.ladder(row["original_id"])
     if not ladder:
-        return {"item_id": circle_id, "original_id": original_id}
+        return row  # linked, but the original's price history is gone
 
     opening = ladder[0]["pricing"]["amount"]
     paid = ladder[-1]["pricing"]["amount"]
-    return {
-        "item_id": circle_id,
-        "original_id": original_id,
+    row.update({
         "bought_price": paid,
         "bought_on": _day(ladder[-1].get("endedAt")),
         "original_opening": opening,
         "original_rungs": len(ladder),
         "bought_discount": round(1 - paid / opening, 3) if opening else None,
-    }
+    })
+    return row
 
 
 def main() -> None:
