@@ -196,3 +196,49 @@ which is the pattern the four known trades associate with the *worst* returns
 Combined with `favouriteCount` it is more interesting: heavily discounted **and**
 widely favourited separates "cheap because nobody wants it" from "cheap and
 wanted". That distinction was not measurable at all before this index.
+
+---
+
+# The curation engine (added 2026-08-05)
+
+`sweep.py` walks items at 200 kr and above (~84k of 529k on shelf, ~11 min at
+Sellpy's maximum 250 per page) into `catalogue`, then rebuilds `brand_stats`.
+Runs daily via `.github/workflows/sweep.yml`. Price history is written by a
+database trigger, so the sweep upserts blindly.
+
+## Scoring, and the assumption under it
+
+Circle asks are capped at **5× what you paid** (confirmed across several items).
+You keep 84%. So for an item worth V bought at P:
+
+    ask    = min(V, 5P)
+    profit = 0.84 × ask − P
+
+V is unobservable, so Sellpy's own estimate stands in: `V = P / priceToEstimateRatio`,
+making V/P the inverse of that ratio. The cap therefore binds at ratio ≤ 0.2, and
+there profit is a flat **3.2 × P** — so among cap-binding items the *dearest* wins.
+
+This inverts the naive reading of the first four trades. Those returned exactly
+5× because they were pinned at the ceiling, not because cheap items are better.
+
+`expected_profit()` is a **ceiling**, not a forecast: it assumes the item sells,
+and that Sellpy's estimate approximates resale value. Multiply by a sell-through
+probability once the cohort supplies one.
+
+## Two traps found while building it
+
+- **Pagination is unstable.** Walking 335 pages of a live index returns some items
+  twice and skips others. Postgres rejects a batch with a duplicate key outright.
+  Sort on a value that does not change, and keep a seen set.
+- **Brand demand needs shrinking.** A brand with two listings, one with 103
+  favourites, scored 51× the catalogue median. Shrunk toward 1.0 with a prior
+  weight of 10 items; computed on the mean, since most items have zero favourites
+  and the median would be 0 for all but the hottest brands.
+
+## Category exclusions
+
+Edit `excluded_categories` — a table, not view SQL, because the list will change.
+Currently only `Prylar > Hemelektronik`. Watches are deliberately unaffected:
+wristwatches are `Accessoarer > Armbandsur`, clocks are `Inredning > Prydnad >
+Klockor`. Smartwatches under `Hemelektronik > Mobil & Wearables > Wearables` ARE
+excluded — reverse that if they should count.
