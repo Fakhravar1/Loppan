@@ -114,6 +114,28 @@ def price_kr(doc: dict, region: str = "SE") -> float | None:
     return block["amount"] / 100 if block else None
 
 
+IMAGE_HOSTS = ("https://prod.images.sellpy.net/",
+               "https://sellpy-parse-prod-files.s3.amazonaws.com/",
+               "https://sellpy-parse-prod-files.s3.eu-west-1.amazonaws.com/")
+
+
+def image_paths(urls) -> list[str]:
+    """Strip the host, keep the path.
+
+    Parse serves a private S3 URL that 403s; the search index serves the public
+    CDN. The path after the host is identical, so storing only the path keeps
+    both sources consistent and survives a host change.
+    """
+    out = []
+    for url in urls or []:
+        for host in IMAGE_HOSTS:
+            if url.startswith(host):
+                url = url[len(host):]
+                break
+        out.append(url)
+    return out
+
+
 def summarise(doc: dict) -> dict:
     shared = doc.get("sharedMetadata") or {}
     translated = doc.get("translatedMetadata_sv") or {}
@@ -131,7 +153,12 @@ def summarise(doc: dict) -> dict:
         # inference. Present on roughly a fifth of items; null means untagged,
         # not all-season.
         "season": translated.get("season"),
+        # Fibre content, raw. Wool/cashmere/silk hold value in ways polyester
+        # does not, so this is a candidate signal — stored unprocessed so the
+        # definition of "premium" can change without re-collecting.
+        "materials": translated.get("material") or doc.get("materials_sv"),
         "category": deepest,
+        "image_paths": image_paths(doc.get("images")),
         "demography": translated.get("demography"),
         "condition": translated.get("condition"),
         "has_defect": bool(translated.get("defects")),

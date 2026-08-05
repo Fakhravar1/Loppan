@@ -31,7 +31,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from loppan import cohort, db, sellpy
+from loppan import cohort, db, search, sellpy
 
 DATA = pathlib.Path(__file__).resolve().parent.parent / "data"
 OFFERS = DATA / "season_offers.jsonl"
@@ -133,6 +133,8 @@ def pull_ladders(items: list[dict]) -> None:
                 "brand": meta.get("brand"),
                 "item_type": meta.get("type"),
                 "condition": meta.get("condition"),
+                "materials": meta.get("material"),
+                "image_paths": search.image_paths(item.get("images")),
                 "demography": meta.get("demography"),
                 "has_defect": bool(meta.get("defects")),
                 "status": item.get("itemStatus"),
