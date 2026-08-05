@@ -50,6 +50,7 @@ def row_of(doc: dict) -> dict:
         "condition": s["condition"],
         "has_defect": s["has_defect"],
         "materials": s["materials"],
+        "sizes": s["sizes"],
         "season": s["season"],
         "price_kr": s["price_kr"],
         "price_to_estimate": s["price_to_estimate"],

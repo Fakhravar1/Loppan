@@ -89,7 +89,12 @@ Tables: `strata` · `cohort_items` · `cohort_checks` · `circle_roundtrips` ·
 `item_ladders`, plus views `v_cohort_status` and `v_cohort_summary`.
 
 RLS is enabled on every table with **no policies**, so the publishable key can
-read and write nothing. The scripts authenticate with the service-role key, read
+read and write nothing *through the tables*. Three curated views —
+`v_candidates`, `v_cohort_summary`, `v_circle_outcomes` — are deliberately
+readable without a login, because the dashboard has none. Treat their contents as
+public and see `docs/api-notes.md` before changing that.
+
+The scripts authenticate with the service-role key, read
 from the environment and never committed:
 
 ```powershell
@@ -115,3 +120,11 @@ The whole experiment in one query:
 ```sql
 select * from public.v_cohort_summary;
 ```
+
+## Dashboard
+
+A read-only Lovable app over the three public views — candidates, cohort strata
+and completed round trips: <https://lovable.dev/projects/413a5b63-ebb6-4f60-a90a-72244eeb39f2>
+
+It has no login by design, which is why those views bypass RLS. It never writes,
+and it reads nothing the daily jobs do not already collect.

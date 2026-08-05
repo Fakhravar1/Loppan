@@ -155,6 +155,13 @@ returned documents and probing filter names.
 | `isOnShelf`, `isReserved`, `saleType`, `p2p` | `p2p:true` = **a Circle listing**. |
 | `embeddingV2` | A vector embedding per item. Similar-item search without any image work. |
 | `keywords_sv`, `concept`, `style_sv` | Generated descriptive tags. |
+| **`sizes`** | Array of coded sizes: `WMN-INT-M`, `WMN-EU-38`, `MEN-EU-48`, `SHOES-EU-40`, `PANTS-INCH-30`, `NO SIZE`. Present on **100%** of sampled documents. |
+
+**`sizes` is not in `translatedMetadata_sv`** — it sits at the top level, and it is
+the only place size is available cheaply. The Parse `Item` has `metadata.size`,
+but reading it costs one request per item: 23 hours for 84,000 items versus zero
+extra requests here, since the sweep already fetches these documents. Stored raw
+and decoded at read time, so the display format can change without re-collecting.
 
 **No price field is exposed at the top level** — `price` / `currentPrice` /
 `salePrice` all 404. It is `price_SE.amount`, and it is in öre.
@@ -253,8 +260,8 @@ shortlist is the whole edge.
 
 | Caller | Sees |
 |---|---|
-| Anonymous (publishable key) | nothing — every endpoint returns `[]` |
-| Signed in, not allowlisted | nothing |
+| Anonymous (publishable key) | **three dashboard views only** — see below |
+| Signed in, not allowlisted | the same three views, nothing more |
 | Signed in **and** in `app_users` | everything |
 
 Add a reader: `insert into public.app_users (email, note) values (...)`.
@@ -262,8 +269,43 @@ Add a reader: `insert into public.app_users (email, note) values (...)`.
 `app_users` deliberately has RLS on and **no policy** — no client should read it.
 `is_allowed()` reaches it as SECURITY DEFINER.
 
-Views are `security_invoker = on`, so they respect the caller's policies instead
-of the view owner's. Without that, selecting through a view bypasses RLS entirely.
+Most views are `security_invoker = on`, so they respect the caller's policies
+instead of the view owner's. Without that, selecting through a view bypasses RLS
+entirely.
+
+## The three public views (changed 2026-08-05)
+
+The Lovable dashboard runs without a login, so `v_candidates`, `v_cohort_summary`
+and `v_circle_outcomes` were switched to `security_invoker = off`. They resolve as
+their owner (`postgres`) and therefore bypass RLS on the base tables. **Treat
+everything in those three views as public** — the publishable key is in the
+browser bundle, so anyone who opens devtools can query them directly with curl.
+The "private Lovable page" protects the page, not the data.
+
+Base tables are untouched: RLS on, no anon policy, so they still return `[]`.
+Verified over HTTP with the publishable key rather than in SQL, because the admin
+role proves nothing:
+
+| Endpoint | Anonymous |
+|---|---|
+| `v_candidates` | 200 — 11,964 rows |
+| `v_cohort_summary` / `v_circle_outcomes` | 200 — rows |
+| `v_cohort_status` | 401 — grant revoked |
+| `app_users` | 401 |
+| `catalogue`, `cohort_items`, `circle_roundtrips`, `brand_stats` | 200 `[]` |
+
+`v_cohort_summary` reads through `v_cohort_status`, so that inner view also had to
+resolve as owner. It is **not** part of the public surface — `anon`'s grant on it
+was revoked, so it cannot be selected directly while `v_cohort_summary` still
+reads it, because permission checks run as the view owner.
+
+**The security linter now reports four `security_definer_view` ERRORs** for these
+views. That is the intended consequence, not a regression: the linter cannot tell
+a deliberately curated public view from an accidental RLS bypass. Do not "fix"
+them without also putting the login back.
+
+To reverse: set `security_invoker = on` on all four and re-grant `select` on
+`v_cohort_status` to `anon`.
 
 **Two things the Supabase linter caught that were genuinely wrong:**
 

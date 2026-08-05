@@ -158,6 +158,11 @@ def summarise(doc: dict) -> dict:
         # definition of "premium" can change without re-collecting.
         "materials": translated.get("material") or doc.get("materials_sv"),
         "category": deepest,
+        # Coded and multi-valued: WMN-INT-M, WMN-EU-38, SHOES-EU-40, PANTS-INCH-30,
+        # and the literal "NO SIZE". Present on every document sampled, and absent
+        # from translatedMetadata_sv — the Parse Item has metadata.size, but that
+        # would cost one request per item. Stored raw; decode at read time.
+        "sizes": doc.get("sizes"),
         "image_paths": image_paths(doc.get("images")),
         "demography": translated.get("demography"),
         "condition": translated.get("condition"),
