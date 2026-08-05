@@ -97,6 +97,48 @@ def upsert(table: str, rows: list[dict], on_conflict: str | None = None) -> int:
 PAGE = 1000
 
 
+def update(table: str, rows: list[dict], key: str) -> int:
+    """PATCH existing rows, one request each.
+
+    Use this, not `upsert`, when filling in a few columns on rows that already
+    exist. PostgREST's upsert constructs a complete insert tuple and validates it
+    before resolving the conflict, so any NOT NULL column missing from the payload
+    fails the whole batch — even though the row is already there and the insert
+    will never happen. PATCH updates only the columns supplied, and cannot
+    accidentally create a row.
+    """
+    if not rows:
+        return 0
+    url, apikey = _creds()
+    done = 0
+
+    for row in rows:
+        payload = {k: v for k, v in row.items() if k != key}
+        if not payload:
+            continue
+        req = urllib.request.Request(
+            f"{url}/rest/v1/{table}?{key}=eq.{row[key]}",
+            data=json.dumps(payload, ensure_ascii=False).encode(),
+            headers={
+                "apikey": apikey,
+                "Authorization": f"Bearer {apikey}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal",
+            },
+            method="PATCH",
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                resp.read()
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                f"{table} update {row[key]}: HTTP {exc.code} — {exc.read().decode()[:300]}"
+            ) from exc
+        done += 1
+
+    return done
+
+
 def query(path: str, paginate: bool = True) -> list[dict]:
     """Read back via PostgREST, e.g. query('v_cohort_summary?select=*').
 

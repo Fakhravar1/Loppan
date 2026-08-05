@@ -18,6 +18,7 @@ Two Parse requests per item, one request per second.
 
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 
@@ -66,42 +67,65 @@ def origin_of(circle_id: str) -> dict | None:
     return row
 
 
+DATA = pathlib.Path(__file__).resolve().parent.parent / "data"
+CACHE = DATA / "circle_origins.jsonl"
+
+
+def _cached() -> dict[str, dict]:
+    """Origins already fetched from Sellpy, keyed by Circle item id.
+
+    Fetching costs two Sellpy requests per item and roughly 17 minutes for the
+    whole stratum. A database error should not make us pay that again, so every
+    origin is written here the moment it is known, and a re-run resumes from it.
+    """
+    if not CACHE.exists():
+        return {}
+    return {
+        row["item_id"]: row
+        for row in (json.loads(line) for line in CACHE.open(encoding="utf-8"))
+    }
+
+
 def main() -> None:
     if not db.configured():
         sys.exit("LOPPAN_SUPABASE_KEY is not set")
 
-    todo = db.query(
-        "cohort_items?select=item_id&stratum=eq.circle&original_id=is.null"
-    )
+    todo = db.query("cohort_items?select=item_id&stratum=eq.circle&original_id=is.null")
     if not todo:
         print("nothing to backfill — every Circle item already has its origin")
         return
 
-    print(f"backfilling {len(todo)} Circle items (~{len(todo)*2//60} min)")
-    rows, missing, failed = [], 0, 0
+    cache = _cached()
+    fetch = [r for r in todo if r["item_id"] not in cache]
+    print(f"{len(todo)} to backfill | {len(cache)} already fetched | "
+          f"{len(fetch)} to pull from Sellpy (~{max(1, len(fetch)*2//60)} min)")
 
-    for n, row in enumerate(todo, 1):
-        try:
-            origin = origin_of(row["item_id"])
-        except Exception as exc:
-            failed += 1
-            print(f"  {row['item_id']}: {type(exc).__name__}", file=sys.stderr)
-            continue
-        if origin is None:
-            missing += 1  # a Circle listing with no preceding pointer
-            continue
-        rows.append(origin)
+    DATA.mkdir(parents=True, exist_ok=True)
+    missing, failed = 0, 0
 
-        # Flush periodically so a crash halfway through does not lose the lot.
-        if len(rows) >= 100:
-            db.upsert("cohort_items", rows, "item_id")
-            print(f"  {n}/{len(todo)} — wrote {len(rows)}", file=sys.stderr)
-            rows = []
+    with CACHE.open("a", encoding="utf-8") as fh:
+        for n, row in enumerate(fetch, 1):
+            try:
+                origin = origin_of(row["item_id"])
+            except Exception as exc:
+                failed += 1
+                print(f"  {row['item_id']}: {type(exc).__name__}", file=sys.stderr)
+                continue
+            if origin is None:
+                missing += 1  # a Circle listing with no preceding pointer
+                continue
+            fh.write(json.dumps(origin, ensure_ascii=False) + "\n")
+            fh.flush()
+            cache[origin["item_id"]] = origin
+            if n % 50 == 0:
+                print(f"  fetched {n}/{len(fetch)}", file=sys.stderr)
 
-    if rows:
-        db.upsert("cohort_items", rows, "item_id")
+    wanted = {r["item_id"] for r in todo}
+    rows = [v for k, v in cache.items() if k in wanted]
+    print(f"\nwriting {len(rows)} rows to Postgres...")
+    print(f"  updated {db.update('cohort_items', rows, 'item_id')}")
 
-    print(f"\ndone. no preceding pointer: {missing} | errors: {failed}")
+    print(f"\ndone. no preceding pointer: {missing} | fetch errors: {failed}")
     print("check:  select * from public.v_circle_outcomes limit 5;")
 
 
