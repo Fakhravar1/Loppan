@@ -552,6 +552,78 @@ kind of traffic that gets noticed, and §8's real risk is the account, not the s
 slowly and narrowly — scope to the brands/categories you actually intend to trade (§9 q1) before
 pulling anything at volume.
 
+### 5.3 The estimate cannot be recovered from history — and 0.84 is untested (2026-08-05)
+
+**Negative result, recorded so nobody spends a day rediscovering it.**
+
+`priceToEstimateRatio` exists **only in the Typesense index**, and that index carries on-shelf
+items only. Parse has no valuation field at all. Two fields look like one and are not:
+
+| Field | What it actually is |
+|---|---|
+| `item.currentValue` | The **current asking price**. Equals `price_kr` exactly; `0` once the item ends. |
+| `item.estimateBidV3` | The **sellability score**, byte-identical to `sellabilityEstimate.score`. Not a price. |
+
+So the moment an item leaves the shelf, the estimate it carried is gone. This sits alongside the
+already-known fact that sell-through cannot be recovered from history: **neither term of the buy
+rule is recoverable backwards.** Both have to be frozen on the way in.
+
+**What this means for the 0.84 threshold.** `expected_profit = 0.84 × estimate − price`, and the
+candidate filter is the same statement rearranged. The `0.84` is two different claims wearing one
+number:
+
+1. **A fee.** You keep 84% of whatever you sell for. Real, unavoidable, independent of any model.
+2. **An assumption that the item sells *at Sellpy's estimate*.** Never tested. Cannot be tested
+   retrospectively, per above.
+
+Claim 2 is doing most of the work and has no evidence behind it. The operator's objection is
+recorded here because it is correct and unrefuted: buyers cannot see the estimate, and if Sellpy's
+valuation is poor then the ratio is noise and the threshold means nothing. The counter-argument is
+narrower than it first appears — an estimate need only *predict* the sale price, not cause it, so
+invisibility is irrelevant — but prediction is precisely what is unmeasured.
+
+Note the two hypotheses point opposite ways and nothing currently separates them:
+
+- If the **estimate** is broken → the ratio is noise, and the buy rule needs a different basis.
+- If the estimate is sound but the **asking price** is distorted by the ladder and by season →
+  the ratio measures exactly that divergence, and it is the sharpest signal in the dataset.
+
+**Evidence gathered while testing this, none of it conclusive:**
+
+- **Sellpy's sellability model rank-orders correctly.** On 250 resolved `item_ladders` rows:
+  score 0.40–0.60 → 69.6% actually sold; 0.60–0.80 → 85.6%; 0.80–0.98 → 89.7%. It is also
+  systematically *conservative* — it under-predicts its own success rate. Caveat: 199 of 250 sold,
+  far too high to be representative, so trust the ordering and not the levels. And this is the
+  **sellability** model, not the **valuation** model.
+- **Opening asks are far above clearing prices.** Across 1,747 resolved items, the median sold item
+  kept only **58.3%** of its opening ask, and 41% of them sold at more than half off. Items that
+  never sold had been marked down to 40.9% and sat a median of 161 days. This is consistent with a
+  deliberate Dutch auction rather than incompetence, so it does **not** establish that Sellpy prices
+  badly — but it does mean the opening ask is a starting bid, not a valuation.
+- **The estimate tracks the current ask closely** (median `price_to_estimate` = 1.105 across the
+  live catalogue). An estimate that follows the ask that tightly may be partly derivative of it,
+  and would then carry less independent information than the filter assumes. Hypothesis, untested.
+
+**The test, now running.** `catalogue.first_seen_price_to_estimate` is frozen by a trigger on
+insert, and `loppan/resolve_outcomes.py` collects outcomes for items that vanish from the sweep.
+`v_ratio_vs_outcome` reports sell-through and `realised_vs_estimate` per ratio band.
+
+Two design points that matter:
+
+- **The bands straddle 0.84 on purpose.** Tracking only items below the line could never show
+  whether the line is in the right place. The 0.84–1.00 trap zone and the above-estimate group are
+  the control, and they are the entire point.
+- **Vanishing is not resolving.** The sweep is scoped to ≥200 kr, so an item marked down past that
+  floor leaves the sweep while still listed. Those come back from Parse as `utlagd` and are skipped
+  rather than recorded — otherwise ordinary markdowns would be logged as failures, which is exactly
+  backwards for a project studying markdowns.
+
+**Cost note that unlocked all of this:** `MarketOffer` accepts a *set* of item pointers
+(`{"item": {"$in": [...]}}`) and embeds the full item with `include=item`. 60 items per request,
+verified. That turns "one request per item" — 23 hours for the catalogue — into something
+proportional to daily churn. §5.1's cost objection to collecting `sellabilityEstimate` at scale is
+therefore withdrawn; the cohort took 22 requests.
+
 ### Remaining recon (not done)
 
 - **Capture the Typesense search call.** DevTools → Network → Fetch/XHR while browsing a brand

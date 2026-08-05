@@ -32,3 +32,12 @@ jobs:
             exit 1
           fi
           python loppan/sweep.py
+
+      - name: Resolve items that vanished from the shelf
+        env:
+          LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
+        # Must run AFTER the sweep: it compares each item's last_seen against the
+        # newest sweep date, so running it first would treat the whole catalogue
+        # as vanished. Cost is proportional to churn, not to catalogue size —
+        # anything the sweep just saw is still listed and needs no request.
+        run: python loppan/resolve_outcomes.py
