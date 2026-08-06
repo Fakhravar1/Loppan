@@ -15,6 +15,7 @@ been measured.
 
 | Path | What it is |
 |---|---|
+| `docs/overview.md` | **Start here.** What the idea is, how the business would work, the constraints, the theories and their standing, and how the crawler operates |
 | `docs/handover.md` | The full design document: ideas, evidence, economics, open questions |
 | `docs/api-notes.md` | **Read before writing a query.** Which Parse queries work, which time out, and why |
 | `loppan/sellpy.py` | Read-only client for Sellpy's public Parse backend |
