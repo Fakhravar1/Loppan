@@ -47,7 +47,23 @@ def _day(value):
 
 
 def vanished(limit: int | None) -> list[str]:
-    """Items the last sweep did not see, and that we have not already resolved."""
+    """Items the last sweep did not see, and that we have not already resolved.
+
+    Gated on the sweep ledger, because "did not see" is only meaningful if the
+    sweep actually finished. A sweep that died at 60% leaves ~66,000 live items
+    with a stale last_seen; without this check they would all be queried against
+    Parse and written as below_floor — mislabelling live inventory and putting a
+    20x traffic spike on Sellpy, which §8 says is the risk that actually matters.
+    Normal churn is ~0.4%, so the 5% ceiling is twelve times headroom.
+    """
+    guard = db.rpc("resolve_precheck", {"p_max_pct": 5.0})
+    if not guard.get("ok"):
+        sys.exit(f"refusing to resolve: {guard['reason']}\n"
+                 f"  {guard['stale']} rows ({guard['pct']}%) look vanished\n"
+                 f"  fix the sweep first — these are almost certainly still listed")
+    print(f"sweep ledger ok ({guard['last_sweep']}); "
+          f"{guard['stale']} items ({guard['pct']}%) vanished since it ran")
+
     resolved = {r["item_id"] for r in db.query("item_outcomes?select=item_id")}
     fresh = db.query("catalogue?select=last_seen&order=last_seen.desc&limit=1")
     if not fresh:

@@ -346,6 +346,38 @@ Most views are `security_invoker = on`, so they respect the caller's policies
 instead of the view owner's. Without that, selecting through a view bypasses RLS
 entirely.
 
+## The sweep ledger (added 2026-08-06)
+
+`sweep_runs` records every sweep: expected count, rows written, status, and the
+**database's** date. Three silent-corruption paths close with it, and two of the
+three had already nearly fired.
+
+| Failure | What used to happen |
+|---|---|
+| Sellpy returns nothing (blocked, filter broken) | Sweep writes 0 rows, brand stats and scores rebuild on stale data, job **exits 0** |
+| Sweep dies partway | ~66,000 live rows keep an old `last_seen`, so `resolve_outcomes` sees them as vanished and writes them all as `below_floor` — plus a 20× traffic spike at Sellpy |
+| Sweep run 00:00–02:00 local | `dt.date.today()` on a UTC+2 machine is a day ahead of Postgres, so every *other* row looks vanished |
+
+Guards, all enforced in the database so a caller cannot skip them:
+
+- **`sweep_begin(expected, floor)`** raises on zero/null, and on a >50% drop against
+  the last good sweep at the same floor — a catalogue does not halve overnight.
+  Returns the run id **and `current_date`**, which the sweep uses for `last_seen`.
+  The runner's clock is never consulted again.
+- **`sweep_finish(run_id, written)`** records `ok` or `failed` at a 90% threshold and
+  **returns a verdict rather than raising**. This matters: the first version raised,
+  which rolled back its own status update, leaving truncated runs recorded as
+  `running` forever. A ledger that misdescribes what happened is worse than none.
+- **`sweep_abort`** is called from a `BaseException` handler, so `KeyboardInterrupt`
+  and a killed process still land in the ledger.
+- **`resolve_precheck(max_pct)`** — `resolve_outcomes.py` asks before trusting
+  `last_seen`, and exits non-zero unless the last sweep is `ok` and under the churn
+  ceiling. Normal churn is **0.39%**; the ceiling is 5%, twelve times headroom.
+
+⚠️ With no run on record, `resolve_outcomes` **refuses to run** — by design. The
+daily workflow sweeps first, so it self-heals; a standalone resolve before the next
+sweep will exit 1 and say so.
+
 ## Hardening from the red team (2026-08-06)
 
 **Writes are revoked, not merely blocked.** Every table had granted

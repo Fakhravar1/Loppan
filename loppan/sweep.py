@@ -46,11 +46,15 @@ FILTER = f"isOnShelf:true && price_SE.amount:>={MIN_PRICE_ORE}"
 DATA = pathlib.Path(__file__).resolve().parent.parent / "data"
 
 
-def row_of(doc: dict) -> dict:
+def row_of(doc: dict, today: str) -> dict:
     s = search.summarise(doc)
     return {
         "item_id": s["item_id"],
-        "last_seen": dt.date.today().isoformat(),
+        # The DATABASE's date, handed back by sweep_begin — never the runner's.
+        # This machine is UTC+2, so a sweep run between 00:00 and 02:00 local used
+        # to stamp last_seen a day ahead of Postgres, after which every other row
+        # looked "vanished" to resolve_outcomes.
+        "last_seen": today,
         "brand": s["brand"],
         "item_type": s["type"],
         "category": s["category"],
@@ -73,8 +77,16 @@ def row_of(doc: dict) -> dict:
 
 def sweep() -> int:
     total = search.count(FILTER)
+
+    # Opens a ledger entry and validates the count before a single row is written.
+    # A zero, or a sudden halving, means the source changed — not that the shelf
+    # emptied — and writing that result would quietly corrupt the record. Raises
+    # rather than returning a flag, so a bad sweep cannot proceed by omission.
+    run = db.rpc("sweep_begin", {"p_expected": total,
+                                 "p_floor": MIN_PRICE_ORE // 100})
+    run_id, today = run["run_id"], run["run_date"]
     print(f"sweeping {total} items at {MIN_PRICE_ORE//100} kr and above "
-          f"(~{total//PAGE + 1} requests)")
+          f"(~{total//PAGE + 1} requests) — run {run_id}, dated {today}")
 
     written, batch, page = 0, [], 1
     # A live index shifts under a 300-page walk: items sell, prices change, and
@@ -84,30 +96,48 @@ def sweep() -> int:
     # contains the same key twice.
     seen: set[str] = set()
 
-    while True:
-        hits = search.search(
-            filter_by=FILTER, per_page=PAGE, page=page, sort_by="saleStartedAt:asc"
-        ).get("hits", [])
-        if not hits:
-            break
+    try:
+        while True:
+            hits = search.search(
+                filter_by=FILTER, per_page=PAGE, page=page, sort_by="saleStartedAt:asc"
+            ).get("hits", [])
+            if not hits:
+                break
 
-        for hit in hits:
-            row = row_of(hit["document"])
-            if row["item_id"] in seen:
-                continue
-            seen.add(row["item_id"])
-            batch.append(row)
+            for hit in hits:
+                row = row_of(hit["document"], today)
+                if row["item_id"] in seen:
+                    continue
+                seen.add(row["item_id"])
+                batch.append(row)
 
-        if len(batch) >= BATCH:
+            if len(batch) >= BATCH:
+                written += db.upsert("catalogue", batch, "item_id")
+                batch = []
+                print(f"  {written}/{total}", file=sys.stderr)
+            page += 1
+
+        if batch:
             written += db.upsert("catalogue", batch, "item_id")
-            batch = []
-            print(f"  {written}/{total}", file=sys.stderr)
-        page += 1
+    except BaseException as exc:
+        # Includes KeyboardInterrupt and SystemExit on purpose: a half-finished
+        # sweep left marked 'running' would block resolve_outcomes forever, but one
+        # silently left 'ok' would make it treat 66,000 live items as vanished. The
+        # ledger must reflect reality even when the process is killed.
+        db.rpc("sweep_abort", {"p_run_id": run_id,
+                               "p_note": f"{type(exc).__name__}: {exc}"})
+        print(f"  run {run_id} marked FAILED — resolve_outcomes will refuse to run "
+              f"until a complete sweep lands", file=sys.stderr)
+        raise
 
-    if batch:
-        written += db.upsert("catalogue", batch, "item_id")
+    # Returns a verdict rather than raising: a RAISE inside the function would roll
+    # back its own status update, leaving a truncated run recorded as 'running'.
+    # The database commits what happened; deciding to fail the process is ours.
+    verdict = db.rpc("sweep_finish", {"p_run_id": run_id, "p_written": written})
+    if not verdict.get("ok"):
+        sys.exit(f"sweep FAILED: {verdict['reason']}")
 
-    print(f"  wrote {written} distinct items")
+    print(f"  wrote {written} distinct items (run {run_id} ok)")
     return written
 
 
