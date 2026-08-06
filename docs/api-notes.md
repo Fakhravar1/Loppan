@@ -227,6 +227,29 @@ at ~470 MB of the 500 MB tier.
 | 50 kr | 333,643 | 471 MB |
 | none | 520,903 | 736 MB |
 
+## `refresh_brand_stats()` — do not restore the LATERAL (2026-08-06)
+
+The first sweep at the 100 kr floor ingested all 165,536 rows and then **failed on
+the last step**: `refresh_brand_stats()` hit `57014 statement timeout`, leaving
+`brand_stats` describing the old 84k catalogue while `v_candidates` served
+`brand_demand` from it. The sweep "succeeded" and the derived signal was silently
+a day and half a catalogue out of date.
+
+The cause scales with two things at once. The function joined a per-brand
+`LATERAL` over the `season_clearings ∪ item_ladders` history, so it re-scanned the
+whole union once per brand: ~12,200 brands × ~1,750 rows ≈ 21M row visits. Both
+factors grew when the floor dropped.
+
+Fixed by aggregating the history by brand **once** and joining, with the
+`having count(*) >= 5` moved into that aggregate. Identical output, one pass:
+**9.8 s for 20,230 brands**, down from a timeout. `service_role` also now carries
+`statement_timeout = '240s'`, since this is a maintenance job called over PostgREST
+where the default is tuned for API calls.
+
+⚠️ If you ever rewrite this function, do not reintroduce the per-brand `LATERAL`.
+It is not merely slow — it fails in a way that leaves stale data behind a
+successful-looking run.
+
 ## Scoring, and the assumption under it
 
 Circle asks are capped at **5× what you paid** (confirmed across several items).
