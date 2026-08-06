@@ -359,6 +359,137 @@ Three wins tell you the upside exists. They tell you nothing about whether it pa
 
 ---
 
+## 3.6 The pilot: what 2,380 resolved items actually say (2026-08-06)
+
+Run before committing to a large collection effort, to find out whether the features we
+were about to spend months gathering carry any signal. Four results, in ascending order
+of importance.
+
+### 3.6.1 Item features barely predict clearing price
+
+Out-of-sample R² on 432 held-out sold items, group means fitted on the other 80%,
+unseen levels falling back to the training mean exactly as they would in production:
+
+| Feature | Out-of-sample R² | Test rows whose level was unseen |
+|---|---|---|
+| brand | **0.151** | **193 of 432 (45%)** |
+| item_type | 0.095 | 23 |
+| season | 0.045 | 0 |
+| demography | 0.026 | 7 |
+| has_defect | 0.001 | 0 |
+| condition | **−0.002** | 0 |
+| material | **−0.003** | 36 |
+
+Condition and material are *worse than predicting the mean*. Brand is the best feature and
+it fails to generalise on nearly half of test rows, because 1,133 brands over 2,160 rows
+means most brands are seen once or twice. That does not improve quickly with more data.
+
+⚠️ An earlier pass of this used **adjusted R²** and reported values like 0.999 for a
+feature explaining 0.1% of variance. The formula was inverted. Cross-validation is the
+right tool here anyway — with 1,000+ level categoricals, in-sample fit is meaningless.
+
+### 3.6.2 What predicts price is price
+
+- Final price from opening ask: **R² = 0.735**. Log-log slope **1.025** — almost exactly
+  proportional.
+- Items clear at a mean **71.7%** of opening ask (sd 0.296).
+- Markdown depth is unrelated to price level (R² = 0.005) but strongly related to
+  **time on market (R² = 0.425)**.
+
+So an "empirical valuation" learned from these features would essentially reproduce
+*0.72 × the opening ask*. That is a restatement of the ladder, not an edge. **This is the
+argument against building a feature-based valuation model to replace `priceToEstimateRatio`.**
+
+### 3.6.3 Ladders are monotone — and that has a hard consequence
+
+Across 8,633 price transitions in 1,497 laddered items, only **46 (0.53%)** went up,
+affecting 3% of items.
+
+> **Every price you can buy a consignment item at is ≥ the price that item later sells for.**
+
+You cannot buy an item below its own clearing price. Buying and reselling into the *same*
+market is structurally loss-making before fees. The edge, if it exists, must come from one
+of three places, and "spotting underpriced items" is not among them:
+
+1. **Circle buyers pay more than consignment buyers** — different venue, no auto-discount.
+2. **Items that expire unsold** — the ladder never revealed a market price.
+3. **Seasonal timing** — §3.6.5, and the only one with supporting evidence.
+
+### 3.6.4 What other people attempting this actually achieve
+
+240 observed Circle round trips by other sellers — bought on Sellpy, relisted on Circle:
+
+| Status | n | Median ask multiple | Avg days on Circle |
+|---|---|---|---|
+| `vilande` (expired unsold) | **163** | 1.30× | 196 |
+| `utlagd` (still listed) | 77 | 1.43× | — |
+| **sold** | **0** | — | — |
+
+They ask **1.3–1.4×**, not 5×. And 163 sat roughly six months and expired.
+
+⚠️ **This cannot give a sell-through rate.** Sold Circle items are deleted from the index,
+so successes are structurally invisible — the same survivorship trap as everywhere else in
+this project. What it does establish is what the *asks* look like, and they are nowhere
+near the 5× target.
+
+### 3.6.5 The seasonal test — Idea 1 confirmed quantitatively, for the first time
+
+Method: for items tagged for exactly one of Vinter or Sommar, median **fraction of the
+opening ask retained** by month of sale. Fraction rather than price, so item value does not
+confound the months. n = 459 winter, 858 summer, cells ≥ 8.
+
+**Winter items**
+
+| Month | n | Median price | % of ask kept | Median days |
+|---|---|---|---|---|
+| Aug | 24 | 65 kr | **33.1%** | 92 |
+| Jul | 51 | 70 kr | 41.7% | 89 |
+| Jun | 42 | 65 kr | 44.1% | 88 |
+| May | 53 | 85 kr | 44.4% | 90 |
+| Sep | 42 | 68 kr | 50.0% | 85 |
+| Oct | 31 | 150 kr | 46.9% | 69 |
+| Nov | 30 | 130 kr | 71.6% | 43 |
+| **Dec** | 30 | **170 kr** | **83.5%** | **32** |
+| Jan | 43 | 100 kr | 69.0% | 42 |
+
+**Summer items run in the opposite phase** — worst in January (43.8%), best in June
+(**73.3%**, 42 days), decaying through September–October (46.7%, 52.9%).
+
+Two independent groups, opposite phases, both moving as predicted. That is much harder to
+explain away than a single curve.
+
+**The quantified edge.** A winter item clearing in August retains ~33% of its opening ask;
+one clearing in December retains ~83%. Buying at the August level and selling at the
+December level is roughly **2.4× gross, ~2.0× after the 16% Circle fee**. For the first
+time this is derived from 1,300+ transactions rather than four anecdotes — and it is
+consistent with both documented 5× trades (COS coat bought Aug, sold Nov; sandals bought
+Nov, sold late June).
+
+**What this does NOT establish, and must not be quoted as if it did:**
+
+- Both sides of the comparison are **consignment clearing prices**. Whether Circle achieves
+  comparable prices is unmeasured — §3.6.4 is the only Circle evidence and it is
+  survivorship-biased.
+- Circle **sell-through is still unknown**. A 2× multiple at 40% sell-through loses money.
+  The `circle` cohort stratum (500 items) is the only unbiased measurement and needs ~60 days.
+- Part of the effect is mechanical: out-of-season items sit longer (92 days vs 32) and the
+  ladder walks them down. From a buyer's standpoint that is the same opportunity, but it is
+  a statement about **inventory age**, not proven buyer demand.
+
+### 3.6.6 Consequence for the collection plan
+
+**Do not build the 300k-item feature-tracking pipeline yet.** §3.6.1 shows the features
+explain ~15% at best; §3.6.2 shows the model they would produce is "0.72 × opening ask".
+Months of collection would buy a model the pilot predicts cannot clear the fee.
+
+The two questions that decide the business are temporal, not cross-sectional, and neither
+needs a new pipeline:
+
+1. **Do Circle buyers pay more than consignment buyers?** — currently unmeasured.
+2. **What is Circle sell-through?** — already running, in the cohort.
+
+---
+
 ## 4. Decisions and rejected approaches
 
 Recorded so they don't get re-proposed. Some of these were argued out over several rounds.
