@@ -1,0 +1,39 @@
+name: below-floor stragglers
+
+# Follows items that were marked down past the sweep's 100 kr floor. They leave the
+# daily collection while still alive, and they are not a rare tail: of resolved
+# items that opened at or above 100 kr, 43% of SALES and 83% of FAILURES ended
+# below 100 kr. Dropping them discards failures at twice the rate of successes,
+# which biases measured sell-through upward.
+#
+# Weekly is deliberate, not a compromise. MarketOffer retains an item's full ladder
+# and final state long after it ends, so a late look loses nothing — and checking
+# these daily would add requests without adding information.
+
+on:
+  schedule:
+    - cron: "10 6 * * 1"   # Mondays, after the daily sweep has finished
+  workflow_dispatch:
+
+concurrency:
+  group: stragglers
+  cancel-in-progress: false
+
+jobs:
+  stragglers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Follow below-floor items to their outcome
+        env:
+          LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
+        run: |
+          if [ -z "$LOPPAN_SUPABASE_KEY" ]; then
+            echo "::error::LOPPAN_SUPABASE_KEY is not set — nothing could be written."
+            exit 1
+          fi
+          python loppan/check_stragglers.py --ladders 200

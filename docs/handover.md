@@ -703,6 +703,42 @@ ever observed.
 Storage is the real constraint below 100 kr — see the table in `api-notes.md`. Note this is not
 retroactive: the 100–200 kr band starts accruing history only from the first sweep after the change.
 
+### 5.6 Below-floor stragglers, and a days_on_market trap (2026-08-06)
+
+The price floor governs **discovery, not follow-up**. Once an id is known, MarketOffer returns the
+item's state and full ladder regardless of price, long after it ends (§5.2). So an item marked down
+past the floor is not lost — only unwatched, and only if you let it be.
+
+Measured on the 1,747 resolved items, of those that **opened** at or above 100 kr:
+
+| | ended below 100 kr | median final price |
+|---|---|---|
+| Sold | **43%** | 80 kr |
+| Never sold | **83%** | 35 kr |
+
+The floor truncates the end of nearly every item's life, and it discards **failures at roughly
+twice the rate of successes**. Left alone that biases measured sell-through *upward* — exactly the
+survivorship error §11 exists to prevent.
+
+`resolve_outcomes.py` now records these as `outcome = 'below_floor'` (a tracking state, not an
+outcome) instead of skipping them. Skipping had a second cost: they never entered `item_outcomes`,
+so they were re-queried **every day forever** and never resolved. `check_stragglers.py` follows
+them weekly and promotes them to `sold`/`expired` when they end. Weekly is sufficient because a
+late look loses no information.
+
+⚠️ **`days_on_market` trap, worth knowing before you write any similar code.** The `latest: true`
+offer is the last rung of the markdown ladder, so its `createdAt` is when the **final price** was
+set — not when the item was listed. Differencing against it yields "days at the final price" while
+calling it days on market. It read as a **4-day** average before the fix and **50 days** after,
+against a 60-day median in the historical ladders. Both scripts now take `listed_on` from a
+separate `first: true` query, one extra batched request per 60 items. `item_outcomes.ended_on` is
+stored so this can be re-derived without re-fetching.
+
+⚠️ **Do not read early `item_outcomes` rows as a sell-through rate.** They are items that vanished
+between two sweeps, which selects hard for things that sold quickly. The apparent ~99% is a
+property of that window, not of the market. Sell-through comes from the cohort, which is why the
+cohort has a frozen selection.
+
 ### Remaining recon (not done)
 
 - **Capture the Typesense search call.** DevTools → Network → Fetch/XHR while browsing a brand

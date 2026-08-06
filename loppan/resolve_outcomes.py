@@ -59,6 +59,28 @@ def vanished(limit: int | None) -> list[str]:
     return todo[:limit] if limit else todo
 
 
+def first_listed(pointers: list[dict]) -> dict[str, str]:
+    """When each item was FIRST listed, keyed by item id.
+
+    The `latest: true` offer is only the last rung of the markdown ladder, so its
+    createdAt is when the final price was set — often days before the sale, and
+    nothing to do with how long the item was on the market. Taking the difference
+    against that would report "days at the final price" while calling it
+    days_on_market. One extra batched request per 60 items buys the real number.
+    """
+    offers = sellpy.find(
+        "MarketOffer",
+        {"item": {"$in": pointers}, "region": "SE", "first": True},
+        limit=200,
+    )
+    out = {}
+    for offer in offers:
+        item_id = (offer.get("item") or {}).get("objectId")
+        if item_id:
+            out[item_id] = _day(offer.get("createdAt"))
+    return out
+
+
 def resolve(item_ids: list[str]) -> tuple[list[dict], int]:
     pointers = [
         {"__type": "Pointer", "className": "Item", "objectId": i} for i in item_ids
@@ -69,6 +91,7 @@ def resolve(item_ids: list[str]) -> tuple[list[dict], int]:
         limit=200,
         include="item",
     )
+    listed = first_listed(pointers)
 
     rows, still_listed = [], 0
     for offer in offers:
@@ -79,25 +102,36 @@ def resolve(item_ids: list[str]) -> tuple[list[dict], int]:
 
         status = item.get("itemStatus")
         outcome = cohort.STATUS_OUTCOME.get(status, "unknown")
+        price = (offer.get("pricing") or {}).get("amount")
+        today = dt.date.today().isoformat()
 
-        # Fell below the 200 kr sweep floor rather than resolving. Not an outcome.
-        if outcome == "still_listed":
-            still_listed += 1
-            continue
-
-        listed_on, ended_on = _day(offer.get("createdAt")), _day(offer.get("endedAt"))
+        # Marked down past the sweep floor rather than resolving. Still alive, so it
+        # is NOT an outcome — but it must be recorded, or it gets re-queried every
+        # day forever and its eventual fate is never observed. check_stragglers.py
+        # follows these to the end.
+        # listed_on comes from the FIRST offer, not this one — see first_listed().
+        listed_on, ended_on = listed.get(item_id), _day(offer.get("endedAt"))
         days = None
         if listed_on and ended_on:
             days = (dt.date.fromisoformat(ended_on) - dt.date.fromisoformat(listed_on)).days
 
+        alive = outcome == "still_listed"
+        if alive:
+            still_listed += 1
+
+        # Every row carries the same keys: PostgREST rejects a batch upsert whose
+        # objects differ in shape ("All object keys must match"), so the live rows
+        # spell out final_price and days_on_market as null rather than omitting them.
         rows.append(
             {
                 "item_id": item_id,
-                "resolved_on": dt.date.today().isoformat(),
-                "outcome": outcome,
-                "final_price": (offer.get("pricing") or {}).get("amount"),
-                "days_on_market": days,
+                "resolved_on": today,
+                "outcome": "below_floor" if alive else outcome,
+                "final_price": None if alive else price,
+                "days_on_market": None if alive else days,
                 "last_status": status,
+                "last_checked_on": today,
+                "last_price_kr": price,
             }
         )
     return rows, still_listed
@@ -131,8 +165,11 @@ def main() -> None:
             written += len(rows)
         print(f"  {min(i + BATCH, len(todo))}/{len(todo)} checked, {written} resolved")
 
-    print(f"\n{written} resolved, {listed} still listed (below the sweep floor), "
-          f"{unknown} unknown status")
+    print(f"\n{written} written: {written - listed} resolved, {listed} below the floor "
+          f"and still alive, {unknown} unknown status")
+    if listed:
+        print(f"  the {listed} below-floor items are now tracked, not skipped — "
+              "check_stragglers.py follows them to the end")
     print("the question this was built for:\n  select * from public.v_ratio_vs_outcome;")
 
 
