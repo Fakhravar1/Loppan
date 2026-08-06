@@ -346,6 +346,37 @@ Most views are `security_invoker = on`, so they respect the caller's policies
 instead of the view owner's. Without that, selecting through a view bypasses RLS
 entirely.
 
+## Analytics slices (added 2026-08-06)
+
+`market_slice(dim, min_n)` and `outcome_slice(dim, min_n)` aggregate in the
+database and return one row per value of the chosen dimension. `p_dim` never
+reaches SQL as text — it selects a branch, and both the expression and the FROM
+clause are fixed strings; an unrecognised dimension raises rather than defaulting.
+
+**Two populations, deliberately not pooled:**
+
+| | Rows | Knows | Cannot answer |
+|---|---|---|---|
+| `market_slice` → `catalogue` | 165,924 live | price, likes, ratio, multiple, size, material, defect rate | anything about outcomes — none of it has sold |
+| `outcome_slice` → `v_resolved_items` | 2,380 resolved | days on market, opening → final price, sell-through | size and likes for the 1,747 legacy ladder rows |
+
+⚠️ **The outcome population is thin and biased, and both facts must travel with
+every number taken from it.**
+
+- **1,133 brands, only 5 with ≥30 observations.** Per-brand outcome metrics are
+  noise today. `outcome_slice` defaults `p_min_n` to 30 for that reason.
+- **~91% of it sold**, which is a sampling artifact — ladder pulls and one-day
+  vanish detection both over-select fast sellers. It is *not* a market
+  sell-through rate, and quoting it as one would be the single most misleading
+  thing this project could publish. Sell-through comes from the cohort.
+- Season, material and size are arrays, so an item counts once per value and
+  column totals legitimately exceed the population.
+
+Real values as of 2026-08-06, useful as a wiring check: `outcome_slice('season')`
+gives Vinter 69 median days and 62.0% of opening price kept, against Sommar at 56
+days and 70.0% — the seasonality direction §3 Idea 1 predicts, on a sample far too
+small and too biased to confirm it.
+
 ## The sweep ledger (added 2026-08-06)
 
 `sweep_runs` records every sweep: expected count, rows written, status, and the
