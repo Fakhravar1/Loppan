@@ -346,7 +346,31 @@ Most views are `security_invoker = on`, so they respect the caller's policies
 instead of the view owner's. Without that, selecting through a view bypasses RLS
 entirely.
 
-## The three public views (changed 2026-08-05)
+## The gate was reopened, then closed again (2026-08-06)
+
+**Current state: closed.** The three views below were anonymous for roughly a day so
+the dashboard could run without a login. They are now back to
+`security_invoker = on`, so reads require a session **and** membership of
+`app_users`. Verified over HTTP with the publishable key: every table and view
+returns `[]`, `app_users` returns 401.
+
+The publishable key **was served in a public bundle** at `loppan.lovable.app`
+during that window and must be assumed compromised. With the gate restored that is
+harmless by design — the key grants nothing without a session, which is the entire
+point of a publishable key. Rotate it if you want belt and braces, but it is not
+load-bearing.
+
+⚠️ **Policies here are scoped `TO authenticated`.** An unscoped policy looks
+equivalent and is not: anon then *evaluates* `is_allowed()`, has no `EXECUTE` right
+on it, and the endpoint answers `401 permission denied for function is_allowed`
+instead of `[]`. Same access outcome, but it leaks the existence and name of an
+internal function to an anonymous caller. `item_scores` was created unscoped and
+had to be corrected — match the existing pattern.
+
+The section below describes the *opened* configuration, kept because it is the
+reference for how to reopen it deliberately.
+
+## The three public views (2026-08-05, since reverted)
 
 The Lovable dashboard runs without a login, so `v_candidates`, `v_cohort_summary`
 and `v_circle_outcomes` were switched to `security_invoker = off`. They resolve as
