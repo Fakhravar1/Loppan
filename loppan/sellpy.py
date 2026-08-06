@@ -11,10 +11,23 @@ authenticates as a user.
 
 from __future__ import annotations
 
+import http.client
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
+
+# Network faults that say "try again", as opposed to "this request is wrong".
+TRANSIENT = (
+    ConnectionError,          # covers ConnectionResetError
+    TimeoutError,
+    http.client.RemoteDisconnected,
+    http.client.IncompleteRead,
+    urllib.error.URLError,    # wraps socket-level failures
+)
+RETRIES = 4
+BACKOFF_S = 3
 
 BASE = "https://sellpy-parse-prod.herokuapp.com/parse"
 APP_ID = "3ebgwo1hPV0sk74fnWBTSW3RIxgw3b2ZAxM6qmCj"
@@ -54,9 +67,23 @@ def _post(path: str, body: dict) -> dict:
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
     )
-    _throttle()
-    with urllib.request.urlopen(req, timeout=SERVER_TIMEOUT_S + 20) as resp:
-        return json.load(resp)
+    # Same reasoning as search.search(): long batched runs hold the connection for
+    # minutes, and a single reset should not abandon the run. HTTPError is left to
+    # propagate — find() reads code 500 as QueryTooSlow, which is not retryable.
+    for attempt in range(RETRIES):
+        _throttle()
+        try:
+            with urllib.request.urlopen(req, timeout=SERVER_TIMEOUT_S + 20) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError:
+            raise
+        except TRANSIENT as exc:
+            if attempt == RETRIES - 1:
+                raise
+            wait = BACKOFF_S * (2 ** attempt)
+            print(f"  {type(exc).__name__} on {path}; retrying in {wait}s",
+                  file=sys.stderr)
+            time.sleep(wait)
 
 
 class QueryTooSlow(RuntimeError):

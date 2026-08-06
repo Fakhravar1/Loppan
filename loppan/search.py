@@ -16,11 +16,24 @@ same restraint applies — modest volumes, one request per second, no redistribu
 
 from __future__ import annotations
 
+import http.client
 import json
+import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+# Network faults that say "try again", as opposed to "this request is wrong".
+TRANSIENT = (
+    ConnectionError,          # covers ConnectionResetError
+    TimeoutError,
+    http.client.RemoteDisconnected,
+    http.client.IncompleteRead,
+    urllib.error.URLError,    # wraps socket-level failures
+)
+RETRIES = 4
+BACKOFF_S = 3
 
 GRAPHQL = "https://sellpy-parse-prod.herokuapp.com/graphql"
 APP_ID = "3ebgwo1hPV0sk74fnWBTSW3RIxgw3b2ZAxM6qmCj"
@@ -82,12 +95,24 @@ def search(filter_by: str = "", per_page: int = 100, page: int = 1, **params) ->
         f"/documents/search?{urllib.parse.urlencode(query)}"
     )
     req = urllib.request.Request(url, headers={"X-TYPESENSE-API-KEY": cfg["searchApiKey"]})
-    _throttle()
-    try:
-        with urllib.request.urlopen(req) as resp:
-            return json.load(resp)
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"search failed: {exc.read().decode()[:200]}") from exc
+
+    # A full sweep is ~340 sequential pages, so the connection is held open for
+    # minutes. A single reset from the far end used to abandon the whole run
+    # two-thirds of the way through and leave the catalogue half-updated.
+    for attempt in range(RETRIES):
+        _throttle()
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"search failed: {exc.read().decode()[:200]}") from exc
+        except TRANSIENT as exc:
+            if attempt == RETRIES - 1:
+                raise
+            wait = BACKOFF_S * (2 ** attempt)
+            print(f"  {type(exc).__name__} on page {page}; retrying in {wait}s",
+                  file=sys.stderr)
+            time.sleep(wait)
 
 
 def count(filter_by: str) -> int:
