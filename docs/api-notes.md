@@ -250,6 +250,42 @@ where the default is tuned for API calls.
 It is not merely slow — it fails in a way that leaves stale data behind a
 successful-looking run.
 
+## Why `score` is stored, not computed (2026-08-06)
+
+The dashboard's default view — `v_candidates?order=score.desc` — **failed outright**
+once the catalogue reached 164k rows: 3.2 s against the anon role's ~3 s statement
+timeout. A computed column in a view cannot be indexed, so every request evaluated
+`expected_profit()` and `has_premium_fibre()` and joined `brand_stats` across all
+rows, then sorted them.
+
+Two steps were needed, and the first alone did not work:
+
+1. **Store the computed scalars** in `item_scores` (score, expected_profit,
+   worth_x_price, premium_fibre, out_of_season_now, cap_binds), indexed on the three
+   sortable ones. Materialising the *whole* view would have duplicated images and
+   arrays for ~230 MB; the scalars cost ~18 MB.
+2. **Move eligibility into that table too.** With the price floor, `is_circle` and the
+   category exclusions still living on `catalogue`, the planner had to scan and filter
+   165k rows before it could sort, and the score index went unused — still 3.3 s.
+   `item_scores` now holds *only* eligible rows and `v_candidates` is driven from it,
+   so ordering walks the index and `catalogue` is touched only for the rows that
+   survive the `LIMIT`.
+
+| Query | Before | After |
+|---|---|---|
+| `order=score.desc&limit=50` | timeout | 1.25 s |
+| full row + `count=exact` | timeout | 1.70 s |
+| `order=expected_profit.desc` | timeout | 0.50 s |
+| `worth_x_price=gte.5` + score | 0.70 s | 0.20 s |
+
+`refresh_item_scores()` runs in `sweep.py` **after** `refresh_brand_stats()` — score
+multiplies by `demand_index`, so scoring first bakes in yesterday's brand demand.
+`out_of_season_now` depends on `CURRENT_DATE`, which is the other reason it is
+recomputed daily. Takes ~22 s over RPC.
+
+⚠️ `Prefer: count=exact` is now the most expensive thing a client can ask for: a full
+scan of 164k rows. Use `count=planned` unless the filter is narrow.
+
 ## Scoring, and the assumption under it
 
 Circle asks are capped at **5× what you paid** (confirmed across several items).

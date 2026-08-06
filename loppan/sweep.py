@@ -117,6 +117,23 @@ def refresh_brands() -> None:
     print(f"  brand stats rebuilt: {result} brands")
 
 
+def refresh_scores() -> None:
+    """Materialise score, expected_profit and the flags into `item_scores`.
+
+    These used to be computed inside v_candidates, which meant ORDER BY score had
+    to evaluate two functions and a join across every row and then sort — 3.2 s
+    against a 3 s statement timeout, so the dashboard's default view simply failed.
+    A computed column in a view cannot be indexed; storing it can.
+
+    Must run AFTER refresh_brands(): score multiplies by brand_stats.demand_index,
+    so scoring first would bake in yesterday's brand demand. `out_of_season_now`
+    also depends on CURRENT_DATE, which is the other reason this is recomputed
+    daily rather than cached indefinitely.
+    """
+    result = db.rpc("refresh_item_scores")
+    print(f"  scores rebuilt: {result} eligible candidates")
+
+
 def main() -> None:
     if not db.configured():
         sys.exit("LOPPAN_SUPABASE_KEY is not set")
@@ -124,6 +141,8 @@ def main() -> None:
         sweep()
     print("rebuilding brand stats...")
     refresh_brands()
+    print("rescoring candidates...")
+    refresh_scores()
     print("\ncheck:  select * from public.v_candidates order by score desc limit 20;")
 
 
