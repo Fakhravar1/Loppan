@@ -1,9 +1,9 @@
 name: catalogue sweep
 
 # Scores the part of the catalogue worth scoring, so it can be curated rather
-# than browsed. ~84,000 items at 250 per request, roughly 10 minutes — against
+# than browsed. ~165,000 items at 250 per request, roughly 20 minutes — against
 # the 63 minutes a full-catalogue sweep would cost, which is why it is scoped
-# to items at or above 200 kr.
+# to items at or above 100 kr. See docs/handover.md §5.5 for why that floor.
 
 on:
   schedule:
@@ -17,7 +17,10 @@ concurrency:
 jobs:
   sweep:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The 100 kr floor roughly doubled the sweep to ~660 requests (~20 min), and the
+    # outcome resolver runs after it. 45 minutes left too little headroom for a run
+    # that hits retries.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

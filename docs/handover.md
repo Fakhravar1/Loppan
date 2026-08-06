@@ -613,13 +613,13 @@ Two design points that matter:
 - **The bands straddle 0.84 on purpose.** Tracking only items below the line could never show
   whether the line is in the right place. The 0.84–1.00 trap zone and the above-estimate group are
   the control, and they are the entire point.
-- **Vanishing is not resolving.** The sweep is scoped to ≥200 kr, so an item marked down past that
+- **Vanishing is not resolving.** The sweep is scoped to a price floor, so an item marked down past that
   floor leaves the sweep while still listed. Those come back from Parse as `utlagd` and are skipped
   rather than recorded — otherwise ordinary markdowns would be logged as failures, which is exactly
   backwards for a project studying markdowns.
 
 **Decision (2026-08-05): the threshold is withdrawn as a filter.** `v_candidates` now screens on
-price only — ≥200 kr, no Circle listings, and the editable category exclusions. It went from 11,964
+price only — no Circle listings, and the editable category exclusions. It went from 11,964
 rows to 83,333. Screening out 85% of the catalogue on an assumption nobody has tested is not a
 defensible default; the ratio still *ranks*, it no longer *excludes*. `worth_x_price` (= 1 ÷ ratio)
 is the working number, since it states the multiple directly — and the target is 5×.
@@ -663,6 +663,45 @@ seeing data, which is the one thing §11's design rules forbid. **Baseline is n=
 
 ⚠️ `price_to_estimate` is deliberately **not** backfilled. Filling it with a later value would
 misrepresent what was known at enrolment, and per §5.3 the enrolment-time value is unrecoverable.
+
+### 5.5 What the shelf is actually made of, and why the floor moved (2026-08-06)
+
+Measured against the live index, 528,433 items on shelf:
+
+| Segment | Items | Share |
+|---|---|---|
+| Clothing (`Kläder`) | 451,944 | 85.5% |
+| Accessories | 39,537 | 7.5% |
+| Shoes | 28,073 | 5.3% |
+| `Prylar` — homeware, media, household, toys, leisure, electronics | 20,207 | 3.8% |
+| `Skönhet` — beauty | 1,429 | 0.3% |
+
+**Non-clothing is ~4%.** Excluding it entirely would free almost nothing, so category
+exclusions are a correctness tool, not a storage one.
+
+**There is no "unknown brand" marker.** `sharedMetadata.brand:=""` returns zero, and none of the
+top 1,000 brand values are placeholders (*Okänt märke*, *Omärkt*, *No brand*). Only 2.75% of
+catalogue rows have a null brand. But functionally a third of the shelf is brandless:
+
+- 44,578 distinct brands; the top 1,000 cover **66.4%** of items.
+- The other 43,578 brands hold **33.6%**, at fewer than 51 listings each.
+- In `catalogue`: 12,213 brands, only **2,067 with 5+ listings**, and **7,439 appearing once**.
+
+That matters because `brand_demand` feeds the score. For a third of the catalogue the brand carries
+no usable statistic, the multiplier defaults to neutral, and the signal is silently absent rather
+than measured as zero.
+
+**The floor moved 200 kr → 100 kr.** The old floor's justification was that shipping slots, not
+capital, are the binding constraint — so cheap items waste slots. That prices a slot by the item's
+price when what matters is profit per slot: a 100 kr buy at 5× returns ~320 kr after fees, beating
+a 400 kr buy at 2×.
+
+⚠️ **The decisive point: both 5× trades in §3.5 were bought at 55 kr and 170 kr.** Both sat below
+the old floor. The tool built to find 5× trades excluded the price band containing every 5× trade
+ever observed.
+
+Storage is the real constraint below 100 kr — see the table in `api-notes.md`. Note this is not
+retroactive: the 100–200 kr band starts accruing history only from the first sweep after the change.
 
 ### Remaining recon (not done)
 

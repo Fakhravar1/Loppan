@@ -3,14 +3,22 @@
 Sellpy's real problem is that half a million items are unbrowsable. This walks the
 part worth walking, stores current state, and lets the database rank it.
 
-Scope is items at or above 200 kr. That is ~84,000 of the 529,000 on shelf, and
-the cut is not a compromise: 92% of the catalogue sits under 400 kr, where the
-absolute margin cannot justify a shipping slot — and shipping slots, not capital,
-are the binding constraint.
+Scope is items at or above 100 kr: ~165,000 of the 529,000 on shelf.
 
-Cost: 250 items per request is Sellpy's maximum, so ~335 requests, about 10
-minutes. Well inside GitHub Actions' free allowance, unlike the 63 minutes a
-full-catalogue sweep would take.
+The floor was 200 kr, justified by shipping slots rather than capital being the
+binding constraint. That logic priced a slot by the item's PRICE when what
+actually matters is profit per slot — and on the 5x thesis the arithmetic runs the
+other way. A 100 kr buy at 5x returns ~320 kr after fees, which beats a 400 kr buy
+at 2x.
+
+The decisive evidence: both 5x trades in the entire evidence base were bought at
+55 kr and 170 kr (§3.5). Both sat below the old floor, so the two items that
+produced the target return were invisible to the tool that was meant to find them.
+
+Cost: 250 items per request is Sellpy's maximum, so ~660 requests, about 20
+minutes. Still well inside GitHub Actions' allowance, unlike the 63 minutes a
+full-catalogue sweep would take — and storage is the real limit below this, since
+a 50 kr floor would put the catalogue alone at ~470 MB of a 500 MB tier.
 
 Price history is written by a database trigger, so this can upsert blindly rather
 than reading 84,000 current prices back out first.
@@ -30,7 +38,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from loppan import db, search
 
-MIN_PRICE_ORE = 20000  # 200 kr
+MIN_PRICE_ORE = 10000  # 100 kr — see the module docstring for why this moved
 PAGE = 250             # Sellpy's hard maximum
 BATCH = 500            # rows per database write
 FILTER = f"isOnShelf:true && price_SE.amount:>={MIN_PRICE_ORE}"

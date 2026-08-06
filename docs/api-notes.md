@@ -208,10 +208,24 @@ wanted". That distinction was not measurable at all before this index.
 
 # The curation engine (added 2026-08-05)
 
-`sweep.py` walks items at 200 kr and above (~84k of 529k on shelf, ~11 min at
+`sweep.py` walks items at **100 kr and above** (~165k of 529k on shelf, ~20 min at
 Sellpy's maximum 250 per page) into `catalogue`, then rebuilds `brand_stats`.
-Runs daily via `.github/workflows/sweep.yml`. Price history is written by a
-database trigger, so the sweep upserts blindly.
+Runs daily via `.github/workflows/sweep.yml`. Price and favourite history are both
+written by database triggers, so the sweep upserts blindly.
+
+**The floor moved from 200 kr to 100 kr on 2026-08-06** because both 5× trades on
+record were bought at 55 and 170 kr — below the old floor, so the tool could not
+have found the only trades that produced the target return. Storage is what stops
+it going lower: at 1,412 bytes/row measured, a 50 kr floor puts `catalogue` alone
+at ~470 MB of the 500 MB tier.
+
+| Floor | On shelf | `catalogue` size |
+|---|---|---|
+| 400 kr | 33,549 | 47 MB |
+| 200 kr (old) | 83,680 | 118 MB |
+| **100 kr (current)** | **164,959** | **233 MB** |
+| 50 kr | 333,643 | 471 MB |
+| none | 520,903 | 736 MB |
 
 ## Scoring, and the assumption under it
 
