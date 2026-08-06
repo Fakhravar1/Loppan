@@ -346,6 +346,41 @@ Most views are `security_invoker = on`, so they respect the caller's policies
 instead of the view owner's. Without that, selecting through a view bypasses RLS
 entirely.
 
+## Hardening from the red team (2026-08-06)
+
+**Writes are revoked, not merely blocked.** Every table had granted
+`INSERT`/`UPDATE`/`DELETE` to `anon` and `authenticated`. RLS did stop them — a POST
+returned an RLS violation, and a PATCH against a *matching* row returned `200 []`,
+zero rows — but every policy here is `FOR SELECT`, so the grants bought nothing and
+left the data one mistake from world-writable. Disabling RLS on a table while
+debugging, or adding one permissive policy, would have exposed `catalogue` and
+`excluded_categories` (which decides what is filtered out of the buy list) to
+anonymous tampering.
+
+`ALTER DEFAULT PRIVILEGES` was changed too, or the fix decays: Supabase's defaults
+re-grant writes on every **new** table, which is exactly how `item_scores` acquired
+them. Verified after: 0 tables writable by `anon`/`authenticated`, all 14 still
+writable by `service_role`, and the collectors confirmed working end to end.
+
+Anonymous writes now answer `401 permission denied for table …` where they
+previously answered `204`.
+
+⚠️ **A `204` on PATCH/DELETE does not mean the write was rejected.** With RLS on and
+no matching policy, the rows are simply invisible to modify, so PostgREST reports
+success having changed nothing. Testing writes requires a filter that matches a real
+row and `Prefer: return=representation` — an empty array back means RLS filtered it,
+rows back mean the write landed.
+
+**Still open, deliberately:**
+
+- Public signup is enabled (`disable_signup: false`). Anyone can reach the
+  `authenticated` role. Harmless while every policy gates on `is_allowed()`, but it
+  makes the allowlist the sole barrier. Turn off in Authentication → Providers.
+- `is_allowed()` is executable by `authenticated` via `/rest/v1/rpc/`, so a
+  signed-up non-member can ask whether they are allowlisted. Revoking `EXECUTE`
+  from `authenticated` does not break the gate — the policies call it as
+  `SECURITY DEFINER`.
+
 ## The gate was reopened, then closed again (2026-08-06)
 
 **Current state: closed.** The three views below were anonymous for roughly a day so
