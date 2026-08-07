@@ -179,30 +179,68 @@ def _prepare(hits: list[dict]) -> None:
 # ---------------------------------------------------------------- strata
 
 
+# Bands must match the price_band CASE in the migration, or weights join to the
+# wrong population. Index is the band number stored on the item.
+BANDS = [(100, 199), (200, 299), (300, 499), (500, 999), (1000, None)]
+PER_BAND = CAP // len(BANDS)
+
+
 def stratum_a(dry: bool) -> int:
+    """Quota per price band within each brand.
+
+    Pulling the first CAP hits per brand does NOT give a representative slice: Algolia
+    orders by its own relevance ranking, which favours expensive items. Measured on
+    COS, that put 15% of the sample under 200 kr where the population is 35%, and 12%
+    above 800 kr where the population is 3.9%. Cheap items are where the deep
+    markdowns are, so the skew ran away from the effect being measured.
+
+    Each band query returns both its items and its `nbHits`, so the band population is
+    captured for free and the inclusion probability becomes known rather than assumed.
+    """
     facets = algolia.brand_facets(MIN_PRICE_KR)
     qualifying = {b: n for b, n in facets.items() if n >= FLOOR}
     print(f"{len(facets)} brands in the facet, {len(qualifying)} with >= {FLOOR} listings")
-    print(f"expected sample: {sum(min(n, CAP) for n in qualifying.values()):,} items "
-          f"in ~{len(qualifying)} requests")
+    print(f"{len(BANDS)} bands x {PER_BAND}/band = up to {CAP} per brand, "
+          f"~{len(qualifying)*len(BANDS):,} requests")
     if dry:
         return 0
 
     today = dt.date.today().isoformat()
     written = 0
     for i, (brand, pop) in enumerate(sorted(qualifying.items(), key=lambda x: -x[1]), 1):
-        hits = algolia.brand_items(brand, CAP, MIN_PRICE_KR)
-        if not hits:
-            continue
-        _prepare(hits)
-        # inverse inclusion probability: how many real listings each sampled item stands for
-        w = pop / len(hits)
-        rows = [row_of(h, "A", w, today) for h in hits]
-        db.upsert("items", rows, "item_id")
+        brand_id = _brands.get(brand)
+        if brand_id is None:
+            db.upsert("brands", [{"name": brand}], "name")
+            for r in db.query(f"brands?select=id,name&name=eq.{brand.replace(' ', '%20')}"):
+                _brands[r["name"]] = r["id"]
+            brand_id = _brands.get(brand)
+
+        bands_seen = []
+        for band_no, (lo, hi) in enumerate(BANDS):
+            f = f"price_SE.amount>={lo*100}" + (f" AND price_SE.amount<={hi*100}" if hi else "")
+            _, ff = algolia.wearable_filter(MIN_PRICE_KR)
+            r = algolia.search(filters=f, facet_filters=list(ff) + [[f"metadata.brand:{brand}"]],
+                               hits_per_page=PER_BAND)
+            hits = r.get("hits", [])
+            if not hits:
+                continue
+            _prepare(hits)
+            rows = [row_of(h, "A", 1.0, today) for h in hits]
+            for row in rows:
+                row["price_band"] = band_no
+            db.upsert("items", rows, "item_id")
+            bands_seen.append({"brand_id": brand_id, "band": band_no,
+                               "population": r.get("nbHits", 0)})
+            written += len(rows)
+
+        if bands_seen:
+            db.upsert("brand_band_population", bands_seen, "brand_id,band")
         db.upsert("brands", [{"name": brand, "population_listings": pop, "stratum": "A"}], "name")
-        written += len(rows)
         if i % 25 == 0 or i == len(qualifying):
             print(f"  {i}/{len(qualifying)} brands, {written:,} items", file=sys.stderr)
+
+    print("recomputing sample weights from observed band coverage...")
+    db.rpc("recompute_sample_weights")
     return written
 
 
@@ -237,19 +275,40 @@ def stratum_b(target: int, dry: bool) -> int:
             if written >= target:
                 return written
             f = f"price_SE.amount>={lo*100}" + (f" AND price_SE.amount<={hi*100}" if hi else "")
-            hits = algolia.search(filters=f, facet_filters=[[f"categories.lvl1:{cat}"]],
-                                  hits_per_page=1000, page=page).get("hits", [])
+            r = algolia.search(filters=f, facet_filters=[[f"categories.lvl1:{cat}"]],
+                               hits_per_page=1000, page=page)
+            hits = r.get("hits", [])
+            if not hits:
+                continue
             tail = [h for h in hits
                     if (h.get("metadata") or {}).get("brand")
                     and (h["metadata"]["brand"] not in big)]
             if not tail:
                 continue
+
+            # Per-shape weight, not one pooled constant. Within this shape the query
+            # reports nbHits items in total and we examined len(hits) of them, so each
+            # kept item stands for nbHits / examined of the population — the tail
+            # fraction cancels, which is why no estimate of "tail items in this band"
+            # is needed.
+            #
+            # ⚠️ This assumes the examined hits are a random slice of the shape. They
+            # are not: Algolia orders by relevance. If tail brands rank systematically
+            # lower they are under-drawn and this UNDERSTATES their weight. Narrow
+            # bands limit the damage but do not remove it. Stratum B is exploratory
+            # for that reason — do not use it for population estimates without saying so.
+            weight = (r.get("nbHits") or len(hits)) / max(len(hits), 1)
+
             _prepare(tail)
-            rows = [row_of(h, "B", 0.0, today) for h in tail]
+            rows = [row_of(h, "B", weight, today) for h in tail]
+            for row in rows:
+                p = row.get("first_price_ore") or 0
+                row["price_band"] = (0 if p < 20000 else 1 if p < 30000
+                                     else 2 if p < 50000 else 3 if p < 100000 else 4)
             db.upsert("items", rows, "item_id")
             written += len(rows)
             print(f"  p{page} {lo}-{hi or '+'} {cat[:14]:14s} +{len(tail):4d} "
-                  f"({written:,})", file=sys.stderr)
+                  f"w={weight:>6.1f} ({written:,})", file=sys.stderr)
     return written
 
 
