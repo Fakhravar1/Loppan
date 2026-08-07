@@ -3,14 +3,19 @@ name: track enrolled items
 # Follows the enrolled sample to its outcome. Replaces the Typesense sweep, which
 # read a ~5% subset of the market and has been removed.
 #
-# Weekly is deliberate. Median time to sell is ~60 days, so weekly checks give
-# ±7-day resolution on duration — ample for a regression — at a seventh of the
-# requests. Nothing is lost by looking late: Parse retains an item's full ladder and
-# final state long after it ends.
+# Daily. Weekly is enough for outcomes alone, but four things only exist at higher
+# resolution and Parse cannot supply any of them: likes gathered in an item's first
+# week, items that sell within days of listing, sales that follow shortly after a
+# markdown, and listing inflow (which sets how crowded the shelf is). Favourites in
+# particular exist ONLY in Algolia.
+#
+# Measured cost: ~66 min per full pass over 666k items, so ~1,980 of the 2,000 free
+# GitHub Actions minutes per month. That is too tight to leave as-is — see the note
+# in the run step.
 
 on:
   schedule:
-    - cron: "30 5 * * 1"   # Mondays, before the cohort check
+    - cron: "30 4 * * *"   # daily, before the cohort check
   workflow_dispatch:
 
 concurrency:

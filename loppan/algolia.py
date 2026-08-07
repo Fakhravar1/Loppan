@@ -28,9 +28,11 @@ The search key is the one every visitor's browser holds, scoped and search-only.
 
 from __future__ import annotations
 
+import concurrent.futures
 import http.client
 import json
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -46,8 +48,16 @@ WEARABLE = [
     "Man > Skor", "Kvinna > Skor", "Barn > Skor",
 ]
 
-MIN_INTERVAL_S = 0.5      # Algolia is built for bulk, but there is no reason to rush
+# Algolia is third-party CDN infrastructure built for high query rates — the
+# storefront itself fires several requests per page view — so a modest parallel read
+# rate is unremarkable here. This is NOT the same judgement as `sellpy.py`, which
+# talks to Sellpy's own Parse backend where the risk is the account, not the server,
+# and which stays at one request per second and strictly serial.
+MIN_INTERVAL_S = 0.05
+MAX_WORKERS = 8
 MAX_HITS_PER_PAGE = 1000  # hard ceiling in the API
+
+_throttle_lock = threading.Lock()
 
 TRANSIENT = (
     ConnectionError, TimeoutError,
@@ -61,11 +71,13 @@ _last_call = 0.0
 
 
 def _throttle() -> None:
+    """Rate-limit across threads, not just within one."""
     global _last_call
-    wait = MIN_INTERVAL_S - (time.time() - _last_call)
-    if wait > 0:
-        time.sleep(wait)
-    _last_call = time.time()
+    with _throttle_lock:
+        wait = MIN_INTERVAL_S - (time.time() - _last_call)
+        if wait > 0:
+            time.sleep(wait)
+        _last_call = time.time()
 
 
 def _post(path: str, body: dict) -> dict:
@@ -148,3 +160,26 @@ def get_objects(item_ids: list[str]) -> list[dict | None]:
         body = {"requests": [{"indexName": INDEX, "objectID": x} for x in chunk]}
         out.extend(_post("*/objects", body)["results"])
     return out
+
+
+def get_objects_parallel(item_ids: list[str], workers: int = MAX_WORKERS):
+    """Same as get_objects, in parallel, yielding (chunk_ids, results) as they land.
+
+    The work is entirely I/O-bound — every second is spent waiting on HTTP — so
+    threads cost almost nothing and turn a serial hour into a few minutes. Results
+    are yielded per chunk rather than collected, so the caller can write as it goes
+    instead of holding 600k records in memory.
+    """
+    chunks = [item_ids[i:i + 100] for i in range(0, len(item_ids), 100)]
+
+    def fetch(chunk):
+        body = {"requests": [{"indexName": INDEX, "objectID": x} for x in chunk]}
+        return chunk, _post("*/objects", body)["results"]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(fetch, c) for c in chunks]
+        for fut in concurrent.futures.as_completed(futures):
+            try:
+                yield fut.result()
+            except Exception as exc:      # one bad chunk must not kill the sweep
+                print(f"  chunk failed: {type(exc).__name__}: {exc}", file=sys.stderr)
