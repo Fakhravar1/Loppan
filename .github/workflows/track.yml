@@ -14,13 +14,14 @@ name: track enrolled items
 # run, or a retry. Every other day is ~15 runs, ~990 min, and still resolves a sale
 # to within two days.
 #
-# Since 2026-08-08 this job runs on the qvitta-pi self-hosted runner (unbilled), so
-# Actions minutes no longer bind the cadence — Sellpy politeness and measurement
-# resolution do. The crawl now originates from a home residential IP, a trade-off
-# made deliberately (see the sibling project's Pi docs). If the Pi is down, a
-# scheduled run queues for up to 24 h and is then cancelled; a missed pass costs
-# only sale-date resolution, and the Pi has an external dead-man alert. To run on
-# GitHub's hosted runners instead, dispatch manually and pick ubuntu-latest.
+# 2026-08-08: an attempt to move this job to the qvitta-pi self-hosted runner
+# (unbilled minutes) was REVERTED the same night. The very first pass wedged the
+# 1 GB Pi into a swap-thrash livelock 14 min in — the tracker's working set over
+# 666k items fits GitHub's 7 GB hosted runners but not a Pi already running two
+# runner listeners and a dbt build. Do NOT point runs-on back at qvitta-pi until
+# the tracker's peak memory is measured and either bounded (streaming/chunked
+# pass) or the runner service is cgroup-capped (MemoryMax) AND the job proven
+# under it. The qvitta-pi option below is kept for that future experiment.
 #
 # NOTE: */2 matches odd days of the month, so gaps are 2 days except at month
 # boundaries (31st -> 1st is consecutive; 29th -> 1st in a 30-day month is 3 days).
@@ -35,8 +36,8 @@ on:
       runner:
         description: Runner to use
         type: choice
-        default: qvitta-pi
-        options: [qvitta-pi, ubuntu-latest]
+        default: ubuntu-latest
+        options: [ubuntu-latest, qvitta-pi]
 
 concurrency:
   group: track
@@ -44,7 +45,7 @@ concurrency:
 
 jobs:
   track:
-    runs-on: ${{ inputs.runner || 'qvitta-pi' }}
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
     timeout-minutes: 300
     steps:
       # SHA-pinned: this job holds the service_role key, which bypasses all RLS.
