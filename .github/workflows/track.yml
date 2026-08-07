@@ -47,3 +47,11 @@ jobs:
             exit 1
           fi
           python loppan/track.py
+
+      - name: Rebuild peer prices for the dashboard
+        env:
+          LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
+        # Must run AFTER the sweep: peer groups are built from live items and their
+        # current prices, so refreshing first would rank against yesterday's shelf.
+        # ~56s for 669k items.
+        run: python -c "import sys; sys.path.insert(0,'.'); from loppan import db; print('peer_prices:', db.rpc('refresh_peer_prices'))"
