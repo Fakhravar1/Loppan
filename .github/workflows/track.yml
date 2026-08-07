@@ -3,19 +3,25 @@ name: track enrolled items
 # Follows the enrolled sample to its outcome. Replaces the Typesense sweep, which
 # read a ~5% subset of the market and has been removed.
 #
-# Daily. Weekly is enough for outcomes alone, but four things only exist at higher
+# Every other day. Weekly is enough for outcomes alone, but four things need finer
 # resolution and Parse cannot supply any of them: likes gathered in an item's first
-# week, items that sell within days of listing, sales that follow shortly after a
-# markdown, and listing inflow (which sets how crowded the shelf is). Favourites in
-# particular exist ONLY in Algolia.
+# week, items that sell within days of listing, sales following shortly after a
+# markdown, and listing inflow. Favourites exist ONLY in Algolia.
 #
-# Measured cost: ~66 min per full pass over 666k items, so ~1,980 of the 2,000 free
-# GitHub Actions minutes per month. That is too tight to leave as-is — see the note
-# in the run step.
+# Cadence is a budget decision, measured rather than guessed. A full pass over 666k
+# items takes ~66 min, so daily would be ~1,980 of the 2,000 free GitHub Actions
+# minutes per month — inside the limit but with no room for the cohort job, a manual
+# run, or a retry. Every other day is ~15 runs, ~990 min, and still resolves a sale
+# to within two days.
+#
+# NOTE: */2 matches odd days of the month, so gaps are 2 days except at month
+# boundaries (31st -> 1st is consecutive; 29th -> 1st in a 30-day month is 3 days).
+# Sale-date precision therefore varies by a day either way, which is immaterial
+# against a ~60-day median time to sell.
 
 on:
   schedule:
-    - cron: "30 4 * * *"   # daily, before the cohort check
+    - cron: "30 4 */2 * *"   # every other day, before the cohort check
   workflow_dispatch:
 
 concurrency:

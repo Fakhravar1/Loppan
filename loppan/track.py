@@ -8,13 +8,18 @@ the whole model rests on, so every disappearance is adjudicated against Parse, w
 seller, or a recategorisation. Counting those as sales would bias sell-through upward,
 which is the one error that would make the project worthless.
 
-Why daily. Weekly is enough to catch outcomes, but four things only exist at higher
+Why every other day. Weekly is enough to catch outcomes, but four things need finer
 resolution and Parse cannot supply any of them: how many likes an item gathers in its
 first week, which items sell within days of listing, whether a sale follows shortly
 after a markdown, and how listing inflow varies (which sets how crowded the shelf is).
 Favourites in particular exist **only** in Algolia — Parse does not store them.
 
-What makes daily affordable. Three things, in order of effect:
+Daily was the intent, but a full pass measures ~66 min, which is ~1,980 of the 2,000
+free GitHub Actions minutes per month — inside the limit with nothing left for the
+cohort job or a retry. Every other day costs ~990 min and still places a sale within
+two days, against a ~60-day median time to sell.
+
+What makes the pass affordable at all. Three things, in order of effect:
 
   1. **Bulk writes.** The original wrote one HTTP PATCH per row: 54 ms each, so a full
      pass over 666k items was ~10 hours. Batched upsert is 1.5 ms/row — measured 37x —
