@@ -26,6 +26,7 @@ from __future__ import annotations
 import datetime as dt
 import pathlib
 import sys
+import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
@@ -312,6 +313,98 @@ def stratum_b(target: int, dry: bool) -> int:
     return written
 
 
+NEW_PER_BRAND = 25      # so Zara cannot flood a single run
+LOOKBACK_DAYS = 3       # overlaps the every-other-day cadence, so nothing slips through
+
+
+def stratum_n(target: int, dry: bool) -> int:
+    """Enrol items that have just been listed.
+
+    This is the highest-value stratum, and the reason is the ladder. Everything in A
+    and B was enrolled mid-life — the median item was already 52 days and several
+    markdowns into its run when we found it, so its true opening price is gone and
+    unrecoverable without a per-item Parse lookup. An item caught within days of
+    listing has its opening price recorded by definition, so its ENTIRE price path
+    from first ask to final sale is observable.
+
+    That is what makes Idea 2 testable: "Sellpy priced it wrong on day one" requires
+    the day-one price, which only this stratum reliably has.
+
+    `firstOfferedAt_SE` is the true listing date and is numerically filterable.
+    `saleStartedAt` is NOT — it marks when the current price step began, a median 79
+    days later, and filtering on it would return items that merely changed price.
+
+    The walk uses price band x category shapes for the same reason stratum B does:
+    Algolia stops paginating a single shape after ~2,000 results, so reach comes from
+    the number of distinct shapes, not from paging deeper.
+    """
+    cutoff = int((time.time() - LOOKBACK_DAYS * 86400) * 1000)
+    bands = [(100,199),(200,299),(300,499),(500,999),(1000,None)]
+    shapes = [(lo, hi, cat) for lo, hi in bands for cat in algolia.WEARABLE]
+
+    f0, _ = algolia.wearable_filter(MIN_PRICE_KR)
+    total_new = algolia.search(filters=f0 + f" AND firstOfferedAt_SE>={cutoff}",
+                               facet_filters=[[f"categories.lvl1:{c}" for c in algolia.WEARABLE]],
+                               hits_per_page=0).get("nbHits", 0)
+    print(f"~{total_new:,} listed in the last {LOOKBACK_DAYS} days; "
+          f"taking up to {target:,}, max {NEW_PER_BRAND}/brand, over {len(shapes)} shapes")
+    if dry:
+        return 0
+
+    today = dt.date.today().isoformat()
+    per_brand: dict[str, int] = {}
+    written = 0
+
+    for page in range(3):
+        for lo, hi, cat in shapes:
+            if written >= target:
+                break
+            f = (f"price_SE.amount>={lo*100}"
+                 + (f" AND price_SE.amount<={hi*100}" if hi else "")
+                 + f" AND firstOfferedAt_SE>={cutoff}")
+            hits = algolia.search(filters=f, facet_filters=[[f"categories.lvl1:{cat}"]],
+                                  hits_per_page=1000, page=page).get("hits", [])
+            if not hits:
+                continue
+
+            keep = []
+            for h in hits:
+                b = (h.get("metadata") or {}).get("brand")
+                if not b or per_brand.get(b, 0) >= NEW_PER_BRAND:
+                    continue
+                per_brand[b] = per_brand.get(b, 0) + 1
+                keep.append(h)
+            if not keep:
+                continue
+
+            # Never reclassify an item we already hold: an item enrolled into A or B
+            # keeps its stratum and its weight, or the sampling design silently rots.
+            ids = [h["objectID"] for h in keep]
+            known = set()
+            for i in range(0, len(ids), 200):
+                chunk = ",".join(ids[i:i + 200])
+                known.update(r["item_id"] for r in
+                             db.query(f"items?select=item_id&item_id=in.({chunk})"))
+            fresh = [h for h in keep if h["objectID"] not in known]
+            if not fresh:
+                continue
+
+            _prepare(fresh)
+            weight = (total_new / target) if target else 1.0
+            rows = [row_of(h, "N", weight, today) for h in fresh]
+            for row in rows:
+                p = row.get("first_price_ore") or 0
+                row["price_band"] = (0 if p < 20000 else 1 if p < 30000
+                                     else 2 if p < 50000 else 3 if p < 100000 else 4)
+            db.upsert("items", rows, "item_id")
+            written += len(rows)
+        if written >= target:
+            break
+
+    print(f"  {len(per_brand):,} distinct brands touched")
+    return written
+
+
 def main() -> None:
     if not db.configured():
         sys.exit("LOPPAN_SUPABASE_KEY is not set")
@@ -322,7 +415,15 @@ def main() -> None:
     _load_caches()
     print(f"caches: {len(_brands):,} brands, {len(_lookup):,} lookups")
 
-    n = stratum_a(dry) if stratum.upper() == "A" else stratum_b(target, dry)
+    u = stratum.upper()
+    if u == "A":
+        n = stratum_a(dry)
+    elif u == "B":
+        n = stratum_b(target, dry)
+    elif u == "N":
+        n = stratum_n(target, dry)
+    else:
+        sys.exit(f"unknown stratum {stratum!r} — use A, B or N")
     print(f"\nenrolled {n:,} items into stratum {stratum.upper()}")
 
 

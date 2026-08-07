@@ -1,0 +1,48 @@
+name: enrol new listings
+
+# Adds items that have just been listed, which the main sample cannot supply.
+#
+# Everything in strata A and B was enrolled mid-life: the median item was already 52
+# days and several markdowns into its run when we found it, so its true opening price
+# is gone and only recoverable by a per-item Parse lookup. An item caught within days
+# of listing has its opening recorded by definition, so its ENTIRE price path — first
+# ask, every markdown, final sale — is observable.
+#
+# That is what makes Idea 2 testable at all. "Sellpy priced it wrong on day one"
+# requires the day-one price.
+#
+# Without this job the sample is frozen: items resolve, the live pool shrinks, and
+# nothing replaces it. It also ages — a set enrolled entirely in August cannot say
+# anything about seasonal listing behaviour.
+#
+# Cadence matches the tracker so the two stay in step, and LOOKBACK_DAYS is 3 against
+# a 2-day gap, so a missed run does not open a hole. Cost is a few minutes a run.
+
+on:
+  schedule:
+    - cron: "0 6 */2 * *"   # every other day, after the tracker and cohort check
+  workflow_dispatch:
+
+concurrency:
+  group: enrol
+  cancel-in-progress: false
+
+jobs:
+  enrol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # SHA-pinned: this job holds the service_role key, which bypasses all RLS.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Enrol newly listed items
+        env:
+          LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
+        run: |
+          if [ -z "$LOPPAN_SUPABASE_KEY" ]; then
+            echo "::error::LOPPAN_SUPABASE_KEY is not set — nothing could be written."
+            exit 1
+          fi
+          python loppan/enrol.py --stratum N --target 5000
