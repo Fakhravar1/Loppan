@@ -1,0 +1,38 @@
+name: track enrolled items
+
+# Follows the enrolled sample to its outcome. Replaces the Typesense sweep, which
+# read a ~5% subset of the market and has been removed.
+#
+# Weekly is deliberate. Median time to sell is ~60 days, so weekly checks give
+# ±7-day resolution on duration — ample for a regression — at a seventh of the
+# requests. Nothing is lost by looking late: Parse retains an item's full ladder and
+# final state long after it ends.
+
+on:
+  schedule:
+    - cron: "30 5 * * 1"   # Mondays, before the cohort check
+  workflow_dispatch:
+
+concurrency:
+  group: track
+  cancel-in-progress: false   # a half-written pass is worse than a late one
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      # SHA-pinned: this job holds the service_role key, which bypasses all RLS.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Check enrolled items and adjudicate disappearances
+        env:
+          LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
+        run: |
+          if [ -z "$LOPPAN_SUPABASE_KEY" ]; then
+            echo "::error::LOPPAN_SUPABASE_KEY is not set — nothing could be written."
+            exit 1
+          fi
+          python loppan/track.py
