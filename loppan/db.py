@@ -168,6 +168,67 @@ def query(path: str, paginate: bool = True) -> list[dict]:
             return rows
         offset += PAGE
 
+def query_pages(path: str, key: str = "item_id", size: int = PAGE):
+    """Yield a read one page at a time, instead of accumulating the whole result.
+
+    Use this over `query` for anything catalogue-sized. `query` materialises every
+    row before the caller sees the first one — for the 669k live items that is
+    288 MB of Python dicts (452 B/row) that then has to stay resident for the whole
+    pass. Paging keeps peak memory proportional to a page.
+
+    Paginates by seeking past the last key read, NOT by Range offsets, for two
+    reasons. Offsets make the database re-walk and discard everything it has
+    already returned, which over 669 pages is quadratic. More importantly they are
+    not stable: PostgREST adds no ORDER BY of its own, Postgres promises no row
+    order without one, and `enrol` can be writing to `items` while a long `track`
+    pass is still reading it — so a row can shift between pages and be silently
+    skipped or returned twice. Ordering by the key and seeking makes each page
+    independent of what happened to the pages before it.
+
+    `key` must appear in the select list, and be unique.
+    """
+    url, apikey = _creds()
+    sep = "&" if "?" in path else "?"
+    last = None
+
+    while True:
+        q = f"{path}{sep}order={key}.asc&limit={size}"
+        if last is not None:
+            q += f"&{key}=gt.{last}"
+        req = urllib.request.Request(
+            f"{url}/rest/v1/{q}",
+            headers={"apikey": apikey, "Authorization": f"Bearer {apikey}"},
+        )
+        with urllib.request.urlopen(req) as resp:
+            page = json.load(resp)
+        if not page:
+            return
+        last = page[-1][key]
+        yield page
+        if len(page) < size:
+            return
+
+
+def count(path: str) -> int:
+    """How many rows a read would return, without transferring any of them."""
+    url, key = _creds()
+    sep = "&" if "?" in path else "?"
+    req = urllib.request.Request(
+        f"{url}/rest/v1/{path}{sep}limit=1",
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Range-Unit": "items",
+            "Range": "0-0",
+            "Prefer": "count=exact",
+        },
+        method="HEAD",
+    )
+    with urllib.request.urlopen(req) as resp:
+        content_range = resp.headers.get("Content-Range") or ""
+    return int(content_range.split("/")[-1]) if "/" in content_range else 0
+
+
 def rpc(name: str, params: dict | None = None):
     """Call a Postgres function. Aggregates belong in the database, not in a
     round trip that pulls 84,000 rows out just to average them."""

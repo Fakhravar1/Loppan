@@ -15,13 +15,20 @@ name: track enrolled items
 # to within two days.
 #
 # 2026-08-08: an attempt to move this job to the qvitta-pi self-hosted runner
-# (unbilled minutes) was REVERTED the same night. The very first pass wedged the
-# 1 GB Pi into a swap-thrash livelock 14 min in — the tracker's working set over
-# 666k items fits GitHub's 7 GB hosted runners but not a Pi already running two
-# runner listeners and a dbt build. Do NOT point runs-on back at qvitta-pi until
-# the tracker's peak memory is measured and either bounded (streaming/chunked
-# pass) or the runner service is cgroup-capped (MemoryMax) AND the job proven
-# under it. The qvitta-pi option below is kept for that future experiment.
+# (unbilled minutes) was REVERTED the same night, when the very first pass wedged
+# the 1 GB Pi into a swap-thrash livelock 14 min in.
+#
+# The memory was then measured, and the diagnosis in the revert was wrong in the
+# direction that mattered: the pass peaked at ~7.3 GB, so it did not comfortably
+# fit the hosted runners either — this repo is private, so ubuntu-latest is the
+# 7 GB runner. The pass is now paged and its Algolia reads windowed, which puts
+# the peak at ~343 MB and keeps it flat as the sample grows. See docs/pi-runner.md.
+#
+# That clears the code-side condition for the Pi but NOT the infrastructure ones.
+# Do not point runs-on at qvitta-pi until the runner service is cgroup-capped
+# (MemoryMax plus MemorySwapMax=0 — swap thrash, not OOM, is what killed the box,
+# and a memory cap alone would not have stopped it) and a watched pass has
+# completed under that cap. The qvitta-pi option below is kept for that.
 #
 # NOTE: */2 matches odd days of the month, so gaps are 2 days except at month
 # boundaries (31st -> 1st is consecutive; 29th -> 1st in a 30-day month is 3 days).
@@ -56,12 +63,21 @@ jobs:
       - name: Check enrolled items and adjudicate disappearances
         env:
           LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
+        # Run under `time -v` so "Maximum resident set size" lands in the log of every
+        # pass. This job quietly grew to a ~7.3 GB peak against a 7 GB runner without
+        # ever failing loudly, because nothing reported the number. It is now paged and
+        # should sit near 350 MB; if that figure starts climbing, something began
+        # accumulating across pages again.
         run: |
           if [ -z "$LOPPAN_SUPABASE_KEY" ]; then
             echo "::error::LOPPAN_SUPABASE_KEY is not set — nothing could be written."
             exit 1
           fi
-          python loppan/track.py
+          if [ -x /usr/bin/time ]; then
+            /usr/bin/time -v python loppan/track.py
+          else
+            python loppan/track.py
+          fi
 
       - name: Rebuild peer prices for the dashboard
         env:

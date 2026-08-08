@@ -32,6 +32,18 @@ What makes the pass affordable at all. Three things, in order of effect:
      own backend one request per second, serially, because there the risk is the
      account rather than the server.
 
+What keeps it affordable as the sample grows. The pass runs in pages of PAGE_ITEMS
+live rows: read a page, check it against Algolia, write what moved, drop it. Nothing
+proportional to the whole sample is held.
+
+That was not true until 2026-08-08, and nobody had ever measured it. A full pass
+peaked at ~7.3 GB — 288 MB of live rows read up front, and every Algolia record ever
+fetched pinned by the futures list in `get_objects_parallel`, at ~10.7 KB an item
+with no ceiling. It fit the hosted runners by luck and a private-repo runner has 7 GB,
+so the margin was negative and nobody knew. Paged and windowed, the same pass peaks
+at 343 MB and stays flat as `enrol` adds items. Keep it that way: anything here that
+accumulates across pages needs to be small and deliberate, like `gone`.
+
 A note on `last_seen`: it is written only when something else changes, which is
 deliberate. Sale-date precision comes from the sweep *cadence*, not from the stored
 field — if the sweep runs daily and an item is gone today, it was present yesterday
@@ -53,21 +65,45 @@ from loppan import algolia, cohort, db, sellpy
 
 WRITE_BATCH = 500
 ADJUDICATE = 60      # MarketOffer $in ceiling, verified
+PAGE_ITEMS = 20_000  # live rows held at once; sets peak memory, see live_item_pages
 
 OUTCOME = {"sold": 1, "expired": 2, "unknown": 3, "still_listed": None}
 
 
-def live_items(limit: int | None) -> list[dict]:
-    """Deliberately does NOT fetch `history`.
+LIVE = ("items?select=item_id,first_seen,price_ore,favourites,is_reserved,"
+        "last_chance&outcome=is.null")
 
-    The array is only needed for the ~5% of rows whose price moved, but pulling it
-    for all 666k inflates the response several-fold and dominated the runtime. It is
-    fetched afterwards, for just those rows, in `histories_for`.
+
+def live_item_pages(size: int = PAGE_ITEMS, limit: int | None = None):
+    """Yield the unresolved rows a page at a time, newest schema fields only.
+
+    Deliberately does NOT fetch `history`. The array is only needed for the ~5% of
+    rows whose price moved, but pulling it for all 669k inflates the response
+    several-fold and dominated the runtime. It is fetched afterwards, for just
+    those rows, in `histories_for`.
+
+    Paged rather than returned whole so that peak memory is set by `size` and not
+    by how large the enrolled sample has grown. The old version read all 669k rows
+    up front, which cost 288 MB before a single Algolia call and grew 452 B for
+    every item `enrol` adds.
+
+    Note `limit` now genuinely limits the read. It used to slice the list *after*
+    fetching everything, so `--limit 5000` still spent the full 105 s and the full
+    288 MB before throwing 664k rows away.
     """
-    q = ("items?select=item_id,first_seen,price_ore,favourites,is_reserved,"
-         "last_chance&outcome=is.null")
-    rows = db.query(q)
-    return rows[:limit] if limit else rows
+    buf: list[dict] = []
+    taken = 0
+    for chunk in db.query_pages(LIVE):
+        buf.extend(chunk)
+        if limit and taken + len(buf) >= limit:
+            yield buf[:limit - taken]
+            return
+        if len(buf) >= size:
+            taken += len(buf)
+            yield buf
+            buf = []
+    if buf:
+        yield buf
 
 
 def histories_for(item_ids: list[str]) -> dict[str, list]:
@@ -173,33 +209,39 @@ def main() -> None:
         sys.exit("LOPPAN_SUPABASE_KEY is not set")
     limit = int(sys.argv[sys.argv.index("--limit") + 1]) if "--limit" in sys.argv else None
 
-    todo = live_items(limit)
-    if not todo:
+    today = dt.date.today()
+    total = min(db.count(LIVE), limit or sys.maxsize)
+    if not total:
         print("nothing live to track")
         return
-    today = dt.date.today()
-    by_id = {r["item_id"]: r for r in todo}
-    print(f"{len(todo):,} live items, {(len(todo)+99)//100:,} read requests "
-          f"across {algolia.MAX_WORKERS} workers")
+    print(f"{total:,} live items, {(total+99)//100:,} read requests across "
+          f"{algolia.MAX_WORKERS} workers, {PAGE_ITEMS:,} rows resident at a time")
 
-    pending, gone, seen, written, done = [], [], 0, 0, 0
-    for chunk_ids, results in algolia.get_objects_parallel([r["item_id"] for r in todo]):
-        for item_id, got in zip(chunk_ids, results):
-            done += 1
-            if got is None:
-                gone.append(item_id)
-                continue
-            seen += 1
-            upd = changed(by_id[item_id], got, today)
-            if upd:
-                pending.append(upd)
-        if len(pending) >= WRITE_BATCH * 4:
-            written += flush(pending)
-            pending = []
-        if done % 50000 < 100:
-            print(f"  {done:,}/{len(todo):,} checked, {written:,} written, "
-                  f"{len(gone):,} gone", file=sys.stderr)
-    written += flush(pending)
+    # Disappearances are adjudicated after the whole sweep, by which point the page
+    # that produced them is long gone — so carry the last known price along with the
+    # id, rather than reaching back into a `by_id` that no longer exists.
+    gone: dict[str, int | None] = {}
+    seen = written = done = 0
+
+    for page in live_item_pages(limit=limit):
+        by_id = {r["item_id"]: r for r in page}
+        pending = []
+        for chunk_ids, results in algolia.get_objects_parallel(list(by_id)):
+            for item_id, got in zip(chunk_ids, results):
+                done += 1
+                if got is None:
+                    gone[item_id] = by_id[item_id].get("price_ore")
+                    continue
+                seen += 1
+                upd = changed(by_id[item_id], got, today)
+                if upd:
+                    pending.append(upd)
+            if len(pending) >= WRITE_BATCH * 4:
+                written += flush(pending)
+                pending = []
+        written += flush(pending)
+        print(f"  {done:,}/{total:,} checked, {written:,} written, "
+              f"{len(gone):,} gone", file=sys.stderr)
 
     print(f"\n{seen:,} still listed, {written:,} rows changed and written, "
           f"{len(gone):,} disappeared")
@@ -208,10 +250,10 @@ def main() -> None:
         return
     print(f"adjudicating {len(gone):,} disappearances against Parse "
           f"(~{(len(gone)+ADJUDICATE-1)//ADJUDICATE:,} requests, serial)")
-    verdicts = adjudicate(gone)
+    verdicts = adjudicate(list(gone))
 
     rows, unaccounted = [], 0
-    for item_id in gone:
+    for item_id, last_price in gone.items():
         v = verdicts.get(item_id)
         if v is None:
             unaccounted += 1
@@ -221,7 +263,7 @@ def main() -> None:
             continue          # not the market. Leave it live.
         rows.append({"item_id": item_id, "outcome": code,
                      "resolved_on": today.isoformat(),
-                     "final_price_ore": final or by_id[item_id].get("price_ore")})
+                     "final_price_ore": final or last_price})
     if rows:
         flush(rows)
     sold = sum(1 for r in rows if r["outcome"] == 1)
