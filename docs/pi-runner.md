@@ -117,53 +117,87 @@ long as it does on hosted.
 84 MB and flat. Worth doing on its own merits regardless of the Pi, and it was:
 the hosted runs were headed for the same wall.
 
-**3. Cap the runner service and prove the job under the cap. — REMAINING, and
-still the non-negotiable one.** Note the correction: **a memory cap alone would
-not have saved the box.** The Pi died of swap thrash, not OOM. With swap reachable,
-a cgroup under pressure reclaims into swap and thrashes there — starving sshd and
-both runners exactly as observed — while never tripping the limit. The line that
-converts "the Pi died" into "the job failed" is `MemorySwapMax=0`.
+**3. Cap the runner service and prove the job under the cap. — DONE.** Note the
+correction that drove the sizing: **a memory cap alone would not have saved the
+box.** The Pi died of swap thrash, not OOM, and swap here is *zram* — compressed
+pages held in the same RAM the kernel is trying to free, so reclaim under pressure
+burns CPU and relieves nothing. That is the livelock. The line that converts "the
+Pi died" into "the job failed" is `MemorySwapMax=0`.
 
-A systemd drop-in at
+Applied as a systemd drop-in at
 `/etc/systemd/system/actions.runner.Fakhravar1-Loppan.qvitta-pi.service.d/memory.conf`:
 
 ```ini
 [Service]
+MemoryAccounting=yes
 MemoryHigh=240M
 MemoryMax=300M
 MemorySwapMax=0
 ```
 
-Sized from the measurements: ~130 MB runner listener + 84 MB job + margin.
-`MemoryHigh` throttles and reclaims first, `MemoryMax` hard-kills, swap is off so
-neither can thrash. Ubuntu 24.04 is cgroup v2, so all three are honoured — confirm
-with `systemctl show <service> -p MemoryHigh -p MemoryMax -p MemorySwapMax`.
+Sized from measurement: ~66 MB runner listener (idle — the earlier ~130 MB figure
+was high) + 84 MB job + headroom. `MemoryHigh` throttles and reclaims first,
+`MemoryMax` hard-kills, swap is denied so neither can thrash. Ubuntu 24.04 is
+cgroup v2 and the kernel confirms all three:
 
-**Prove the cap before trusting it.** Run a deliberate memory balloon inside that
-cgroup and confirm it is OOM-killed cleanly while the box stays responsive. If that
-test does not pass, nothing else here is safe.
+```
+systemctl show <service> -p MemoryHigh -p MemoryMax -p MemorySwapMax
+cat /sys/fs/cgroup$(systemctl show <service> -p ControlGroup --value)/memory.max
+```
 
-**4. Add the fallback router — REMAINING.** See below; with the Pi becoming the
-default rather than an experiment, the silent-queue failure mode stops being
-acceptable.
+**Proved before being trusted.** A 10 MB-at-a-time balloon in a transient scope
+carrying the same limits was killed at 306 MB anon-RSS in **one second**, with
+`constraint=CONSTRAINT_MEMCG` and `oom_memcg` naming the balloon's own cgroup —
+so the kill was scoped, not global. Swap was untouched, load average did not move,
+and both runners stayed active. That is the whole point: the box no longer notices.
 
-Only then flip `runs-on:` to `qvitta-pi` (the dispatch input already offers it) and
-watch the first pass to completion — deliberately timed to overlap a dbt build,
-because that is the case that has to survive.
+**4. Add the fallback router — DONE in the workflow, one manual step outstanding.**
+The `route` job in `track.yml` probes runner status and picks `runs-on`. It needs a
+secret to do so, and **until that secret exists the router warns and routes hosted**
+— so the Pi will not actually be used:
 
-**Cap the sibling's runner too.** Right now dbt has exactly the same power to take
-the box down that `track` had, and Loppan is what gets starved next time.
+1. Create a fine-grained PAT scoped to `Fakhravar1/Loppan` with
+   **Repository permissions → Administration: Read-only**. This is the only
+   permission it needs. `GITHUB_TOKEN` cannot be granted it, which is why a
+   separate token is required at all.
+2. `gh secret set RUNNER_STATUS_TOKEN --repo Fakhravar1/Loppan`
+
+Until then every scheduled pass runs hosted, with a warning annotation saying why.
+That is the safe direction to fail, but it is not free.
+
+## Proven on the Pi, 2026-08-08
+
+A full pass, dispatched with `runner=qvitta-pi`, run `31254519767`:
+
+| | hosted | qvitta-pi |
+|---|---|---|
+| wall clock (`track.py`) | 25:06 | **7:46** |
+| peak RSS | 84 MB | **57 MB** |
+| cgroup OOM kills | — | **0** |
+| swap consumed | — | **0** |
+
+The Pi was *faster*, which is not the paradox it looks like: the pass is ~5% CPU
+and the rest is waiting on Algolia, where a home connection beats a hosted runner's
+path to the CDN. The two runs are not strictly comparable — the hosted one wrote
+184,218 changed rows against the Pi's 11,919, having been the first pass in weeks —
+but the fetch itself was quicker from home.
+
+The cgroup recorded 355 `high` events (reclaim at the throttle point) and **zero**
+`max` or `oom_kill` events. The reclaimed memory is page cache from checkout, which
+is exactly what `MemoryHigh` is for: throttle on cheap memory before killing on
+expensive memory.
+
+**Still worth doing: cap the sibling's runner too.** Right now dbt has exactly the
+same power to take the box down that `track` had, and Loppan is what gets starved
+next time.
 
 ## Things that will bite you if you don't know them
 
-- **No fallback router.** The sibling project has an edge function that probes
-  whether the Pi is online and routes to `ubuntu-latest` if not. Loppan has none.
-  A scheduled run dispatched at a dead Pi **queues silently for up to 24 h, then
-  cancels** — it does not fail fast, and nothing alerts. `timeout-minutes` does not
-  help: it counts execution time, not queue time. The fix is the same shape as the
-  sibling's — a tiny hosted `route` job emitting a runner label, consumed as
-  `runs-on: ${{ needs.route.outputs.runner }}`. It costs seconds of billed minutes
-  per run and removes the failure mode entirely.
+- **A job sent to an offline self-hosted runner does not fail — it queues**,
+  silently, for up to 24 h, and is then cancelled. `timeout-minutes` does not help:
+  it counts execution time, and a queued job has none. This is why the `route` job
+  exists. If you ever bypass it by hardcoding `runs-on: qvitta-pi`, you are back to
+  a dead Pi meaning a silently skipped pass with no alert.
 - **`enrol` and `cohort-check` stay hosted, deliberately.** They are ~90 min/month
   between them and moving them adds Sellpy-from-home-IP exposure for little saving.
 - **The crawl would originate from a home residential IP** — the same household as
@@ -180,9 +214,11 @@ the box down that `track` had, and Loppan is what gets starved next time.
   an alert email names which runner died. Verified in the real incident above:
   detected within 15 min, emails delivered. If you get a
   `qvitta-pi-loppan-runner is DOWN` email, the Pi or its Loppan runner is gone.
-- **The pass is restartable in principle but not yet in practice.** Paging walks
-  `item_id` in order, so a killed run could resume from the last id written — but
-  nothing records that id yet. Worth adding before trusting a box that can OOM-kill.
+- **The pass resumes after a kill.** `track.py` checkpoints the last completed page
+  to `track_progress`, and that row exists *only* while a pass is in flight — so a
+  row left behind is itself the signal that the previous pass died. One caveat is
+  logged rather than hidden: disappearances found before an interruption are not
+  adjudicated on the resumed run, and stay live until the next pass.
 
 ## The honest summary
 
@@ -191,9 +227,16 @@ Loppan code defect rather than a hardware limit: an unbounded working set that
 happened to be over the hosted ceiling too. That is fixed — 84 MB, flat as the
 sample grows, and now printed on every run.
 
-What is left is not about memory. It is about making sure that when something on
-this box does misbehave, it fails as a job instead of as a machine: cap the cgroup,
-kill swap for it, prove the cap, and give the workflow somewhere to go when the Pi
-is not there. The saving is smaller than the first draft of this document claimed
-(~400 min/month, not ~990) but it is drawn from an account-wide pool that several
-projects share, which is what makes it worth claiming.
+The rest was about making sure that when something on this box misbehaves it fails
+as a job instead of as a machine. That is now true and demonstrated: the cgroup is
+capped, swap is denied to it, an overrun is a one-second scoped OOM kill, a killed
+pass resumes from its checkpoint, and a dead Pi routes to hosted instead of queueing
+into silence. A full pass has run there end to end — 7:46, 57 MB, no kills.
+
+The saving is smaller than the first draft of this document claimed (~400 min/month,
+not ~990) but it is drawn from an account-wide pool that several projects share,
+which is what makes it worth claiming.
+
+One manual step stands between this and the Pi actually being used: creating
+`RUNNER_STATUS_TOKEN`, without which the router cannot see the Pi and routes hosted
+every time. Until that exists, everything here is built and proven but idle.
