@@ -108,12 +108,18 @@ feature built on it measures time-at-current-price.
 
 ## Supporting tables
 
-**`brands`** (15,455) — `name`, `price_point` (Sellpy's 1–6 tier), `styles`, `age_groups`,
+**`brands`** (16,067) — `name`, `price_point` (Sellpy's 1–6 tier), `styles`, `age_groups`,
 `origin_vibe`, `ethos`, `aesthetic_tone`, `population_listings`, `stratum`.
 
-Every classification field is **constant per brand** — verified across 857 brands, zero
-with a second classification. That is why they live here rather than being repeated on
-666,769 item rows.
+Every classification field is **constant per brand** — re-verified 2026-08-08 across
+14,896 brands with exactly one disagreement (Conhpol, left unwritten). That is why they
+live here rather than being repeated on 666,769 item rows.
+
+⚠️ All six classification fields were **null for every brand** between the v2 rehaul and
+2026-08-08, when `loppan/backfill_brand_classification.py` read them back off the
+`brandClassification` object on the Algolia documents. 14,895 of 15,492 brands are now
+populated; the rest have no live item left in the index to read. `population_listings` and
+`stratum` remain sparse (1,047 brands) — they come from the sampling frame, not Algolia.
 
 **`lookup`** — every categorical value, keyed by `kind`
 (category, item_type, size, condition, demography, fabric, pattern).

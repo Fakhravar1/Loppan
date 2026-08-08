@@ -65,11 +65,14 @@ competed on. The current shelf is missing the items that have since left it — 
 so those percentiles sit fractionally high. They are flagged by `peer_frozen_on` being
 *later* than `resolved_on`; everything frozen from 2026-08-09 onward has no such gap.
 
-**`peer_level` 3 is currently much weaker than it claims.** It is documented as "same
-brand tier, same garment", but `brands.price_point` is null for all 16,067 brands, so the
-tier collapses to a single bucket and level 3 is really "same garment, whole market" —
-66,367 items at an average of **7,020** peers. Check `peer_n` before trusting one.
-Populating `price_point` fixes it with no schema change.
+**`peer_level` 3 is the loosest rung and its groups are large.** Check `peer_n` before
+trusting one — the levels run 46, 85 and 1,832 average peers.
+
+It used to be far worse, and invisibly so. Level 3 groups on (brand tier, garment), and
+`brands.price_point` was null for all 16,067 brands after the v2 rehaul, so the tier
+collapsed into a single bucket and level 3 silently became "same garment, anywhere in the
+market" at ~7,020 peers while still reporting itself as a tier comparison. Fixed
+2026-08-08 by `loppan/backfill_brand_classification.py` — §7.
 
 ### Does it work?
 
@@ -124,6 +127,9 @@ four listings has no rate, and letting it set `best_rate` would make the board n
 | price_band | 5 | 2.57 | 0.047 | <200 kr → 2.62% | 1000+ → 0.79% |
 | peer_quartile | 4 | 1.96 | 0.042 | cheapest quarter → 2.60% | priciest → 1.12% |
 | age_days | 5 | 1.89 | 0.031 | 121+ → 2.66% | 0–14 → 1.16% |
+| brand_origin | 10 | 1.59 | 0.021 | Japanese → 2.37% | Korean → 0.98% |
+| brand_tier | 6 | 1.56 | 0.016 | tier 2 → 2.32% | tier 1 → 1.33% |
+| brand_ethos | 9 | 1.40 | 0.016 | Fast fashion → 2.40% | Disposable → 1.01% |
 | season | 4 | 1.12 | 0.007 | autumn → 2.02% | summer → 1.76% |
 | condition | 4 | **1.09** | 0.005 | Bra → 1.92% | Acceptabelt → 1.71% |
 | has_defect | 2 | **1.05** | 0.004 | false → 1.91% | true → 1.79% |
@@ -140,12 +146,21 @@ its arrival is visible, not because it currently says anything.
 | feature | buckets | price ratio | eta² | dearest | cheapest |
 |---|---|---|---|---|---|
 | brand | 969 | 3.16× | **0.307** | Zimmermann 1,895 kr | Gildan Softstyle 135 kr |
+| **brand_tier** | 6 | 2.98× | **0.131** | tier 6 → 784 kr | tier 1 → 173 kr |
 | item_type | 218 | 2.09× | 0.103 | Brudklänning 1,409 kr | Nylonstrumpbyxor 155 kr |
 | category | 63 | 2.19× | 0.086 | Kavajer & Kostymer 583 kr | Barn underkläder 159 kr |
+| brand_ethos | 9 | 2.03× | 0.087 | Luxury Heritage 537 kr | Disposable 166 kr |
 | weight_g | 5 | 1.77× | 0.068 | 800+ → 451 kr | 0–150 → 213 kr |
 | favourites | 6 | 1.41× | 0.048 | 21+ → 444 kr | 3–5 → 267 kr |
+| brand_origin | 10 | 1.67× | 0.027 | French 400 kr | Chinese 219 kr |
 | condition | 4 | 1.23× | 0.009 | Nytt 369 kr | Acceptabelt 285 kr |
 | **p2p** | 2 | **1.00×** | **0.000** | consignment 309 kr | circle 308 kr |
+
+The three brand-classification features are the sharpest illustration of why the two
+targets are kept apart. `brand_tier` is the second-strongest thing in the database for
+explaining **price** (2.98×, tier 6 asks 784 kr against tier 1's 173 kr) and close to
+worthless for predicting a **sale** (1.56×, and tier 2 outsells tier 6). Sellpy's tier
+describes what a brand costs, not whether anyone is buying it today.
 
 That last row is a direct answer to `overview.md` §10 question 2, and it is a no: Circle
 sellers do not ask a premium. They ask the same money as consignment and, per §5 below,
@@ -278,3 +293,42 @@ The database is at **281 MB of the 500 MB free tier**. `overview.md` §5 already
 storage as the binding constraint on how much of the market can be tracked; `brand_daily`
 is now the fastest-growing thing that is not `items` itself, and is the first candidate for
 a slower cadence or a retention window if that ceiling starts to bite.
+
+---
+
+## 7. The brand classification backfill
+
+```bash
+python loppan/backfill_brand_classification.py            # only brands still missing it
+python loppan/backfill_brand_classification.py --all      # re-read every brand
+```
+
+All six of `price_point`, `styles`, `age_groups`, `origin_vibe`, `ethos` and
+`aesthetic_tone` were null for all 16,067 brands after the v2 rehaul. `schema.md`
+documented them as present; enrolment never carried them across. The cost was quiet —
+level-3 peer groups eight times too wide (§2), and `dash_slice(p_dim => 'brand_tier')`
+returning nothing at all.
+
+They did not need a new source. Every Algolia document already carries the whole thing
+inline as `brandClassification`, so the fix reads three live items per brand — 276 requests
+— rather than re-sweeping 6,700. Run 2026-08-08: **14,895 of 15,492 brands resolved**, 596
+had no live item left in the index, and only 972 live items (0.15%) remain on an
+unclassified brand.
+
+Three items per brand rather than one, for two reasons. Sold items vanish from Algolia
+immediately, so a single sampled id can easily come back empty. And sampling more than one
+lets the script *check* the assumption everything downstream rests on — that the
+classification is constant per brand — rather than trusting it. `schema.md` claimed this
+on 857 brands; it now holds on **14,896, with exactly one disagreement** (Conhpol), which
+is left unwritten rather than resolved by coin flip.
+
+### A trap this exposed, worth knowing before writing another RPC
+
+**PostgREST silently truncates a set-returning function at 1,000 rows.** The first run
+asked for ~46,000 rows, got 1,000, and cheerfully reported "334 brands to classify" against
+a real figure of 15,492 — a wrong answer that looked entirely like a right one. `db.query`
+pages around this with Range headers and says so in its docstring; `db.rpc` does not.
+
+`brand_sample_items()` therefore returns a single `json` value instead of a set, which is
+the same dodge `dash_overview()` uses. **Any new set-returning RPC expecting more than
+1,000 rows has this bug until proven otherwise.**
