@@ -187,9 +187,58 @@ The cgroup recorded 355 `high` events (reclaim at the throttle point) and **zero
 is exactly what `MemoryHigh` is for: throttle on cheap memory before killing on
 expensive memory.
 
-**Still worth doing: cap the sibling's runner too.** Right now dbt has exactly the
-same power to take the box down that `track` had, and Loppan is what gets starved
-next time.
+## The sibling's runner is capped too (2026-08-08)
+
+Symmetry, not paranoia: `track` proved an unbounded job on this box takes the whole
+machine with it, and Loppan now *depends* on the box. Nothing stopped dbt doing the
+same thing in the other direction.
+
+Measured before sizing, because dbt is a much larger workload than `track` and a
+copied config would have killed healthy builds:
+
+| | idle | during a build |
+|---|---|---|
+| anon | 20 MB | **206–221 MB** |
+| memory.current | 334 MB | 449–495 MB |
+| peak current since boot | | 629 MB (~11 builds) |
+
+**The cap is sized against anon, not `memory.current`.** At idle the cgroup was
+20 MB of anon against 295 MB of page cache — 88% reclaimable. Sizing to the 629 MB
+figure would have set a ceiling three times larger than the workload needs, which
+protects nothing.
+
+`/etc/systemd/system/actions.runner.Fakhravar1-claim-my-train.qvitta-pi.service.d/memory.conf`:
+
+```ini
+[Service]
+MemoryAccounting=yes
+MemoryHigh=450M
+MemoryMax=600M
+MemorySwapMax=192M
+```
+
+Note `MemorySwapMax` is **bounded here, not 0 as on the Loppan unit**. The livelock
+came from unbounded zram reclaim, not from swap existing; zram compresses ~4.6:1 on
+this box, and letting the kernel page out genuinely cold pages is worth having when
+RAM is this tight. Capping it stops a thrash spiral without forbidding normal
+behaviour. (Observed swap during a build after the restart: 0 MB. The allowance is
+headroom, not a requirement.)
+
+Verified against a real build rather than assumed: peak anon 206 MB, `high` 104
+(cache reclaim at the throttle point, which is the intent), **`max` 0 and
+`oom_kill` 0**, service still active afterwards.
+
+### The two ceilings deliberately oversubscribe the box
+
+Loppan's 300M plus dbt's 600M is 900 MB on an 899 MB machine. That is intentional.
+`MemoryMax` is a runaway-stopper, not an operating point. What governs steady state
+is the `MemoryHigh` pair — 240M + 450M = 690 MB, leaving ~200 MB for the OS, which
+does fit, and both workloads sit well below their throttle points in normal use.
+
+If both ever hit their hard ceiling simultaneously, the global OOM killer takes a
+process and a job dies. That is the outcome we want, and it is precisely what was
+*not* possible before: with swap unbounded, the box livelocked instead of killing
+anything.
 
 ## Things that will bite you if you don't know them
 
