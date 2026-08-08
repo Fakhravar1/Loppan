@@ -22,6 +22,7 @@ import urllib.request
 PROJECT_REF = "zgqywowejxtokqsybqnu"
 DEFAULT_URL = f"https://{PROJECT_REF}.supabase.co"
 BATCH = 500
+RPC_TIMEOUT = 300  # seconds; the slowest analytics function measures ~56 s
 
 
 class NotConfigured(RuntimeError):
@@ -256,9 +257,20 @@ def count(path: str) -> int:
     return int(content_range.split("/")[-1]) if "/" in content_range else 0
 
 
-def rpc(name: str, params: dict | None = None):
+def rpc(name: str, params: dict | None = None, timeout: int = RPC_TIMEOUT):
     """Call a Postgres function. Aggregates belong in the database, not in a
-    round trip that pulls 84,000 rows out just to average them."""
+    round trip that pulls 84,000 rows out just to average them.
+
+    The analytics functions are the long ones — measured 2026-08-08 against 669k
+    items: refresh_peer_prices ~56 s, snapshot_predictors ~39 s, snapshot_brands
+    ~10 s. All three set their own statement_timeout server-side; `timeout` here
+    guards the socket, so a gateway that accepts the POST and then goes quiet
+    fails in minutes instead of holding the job open for its full 300.
+
+    A socket timeout does NOT mean the work did not happen — the statement keeps
+    running server-side and usually finishes. All three functions replace their
+    own day's rows rather than appending, so the safe response is to re-run.
+    """
     url, key = _creds()
     req = urllib.request.Request(
         f"{url}/rest/v1/rpc/{name}",
@@ -271,8 +283,13 @@ def rpc(name: str, params: dict | None = None):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode()
             return json.loads(body) if body else None
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"rpc {name}: HTTP {exc.code} — {exc.read().decode()[:300]}") from exc
+    except (TimeoutError, urllib.error.URLError) as exc:
+        raise RuntimeError(
+            f"rpc {name}: no response within {timeout}s. The statement may still be "
+            f"running server-side; re-running is safe."
+        ) from exc

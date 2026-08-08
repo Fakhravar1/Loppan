@@ -142,10 +142,19 @@ jobs:
             python3 loppan/track.py
           fi
 
-      - name: Rebuild peer prices for the dashboard
+      - name: Rebuild the analytics layer
         env:
           LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
-        # Must run AFTER the sweep: peer groups are built from live items and their
-        # current prices, so refreshing first would rank against yesterday's shelf.
-        # ~56s for 669k items.
-        run: python3 -c "import sys; sys.path.insert(0,'.'); from loppan import db; print('peer_prices:', db.rpc('refresh_peer_prices'))"
+        # Peer prices, the predictor leaderboard and the brand snapshot, in that
+        # order — see loppan/analytics.py for why the order is load-bearing.
+        #
+        # Must run AFTER the sweep, for two separate reasons. Peer groups are built
+        # from live items at their current prices, so refreshing first would rank
+        # against yesterday's shelf. And the peer freeze reads the outcomes track.py
+        # has just written, so running first would freeze nothing.
+        #
+        # ~1 min 45 s for 669k items, against a ~27 min pass. Not gated on the sweep
+        # succeeding in full: a resumed or partial pass still leaves the shelf in a
+        # readable state, and a day with no analytics row is harder to spot later
+        # than one whose row is merely built on fewer observations.
+        run: python3 loppan/analytics.py

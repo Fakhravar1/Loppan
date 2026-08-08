@@ -48,6 +48,15 @@ index the sellpy.se storefront runs on. Two fields come from elsewhere and are m
 | `final_price_ore` | What it sold for. From **Parse**, not Algolia |
 | `history` | Packed `[day, price, day, price…]`, day counted from `first_seen`. Appended only when the price moves |
 | `price_to_estimate` | Sellpy's asking price ÷ their own value estimate. Only ~2,900 items, from the abandoned **Typesense** index |
+| `peer_pct_frozen` | Where this item sat among comparable live listings the last time it was seen on the shelf, 0 = cheapest. **Written once, when the item resolves** |
+| `peer_median_ore_frozen` | What that peer group's median ask was |
+| `peer_n_frozen` | How many peers the comparison was against. Under ~20 it means little |
+| `peer_level_frozen` | 1 brand+garment+condition · 2 brand+category · 3 garment across the market. See `analytics.md` §2 — level 3 is far weaker than its name |
+| `peer_frozen_on` | Which pass's shelf the percentile was measured against |
+
+The `peer_*_frozen` columns are the joinable copy. The live equivalent for currently-listed
+items is the `peer_prices` table, which is truncated and rebuilt every pass and therefore
+holds **nothing** for resolved items — that is exactly why these exist. `analytics.md` §2.
 
 ⚠️ **`first_price_ore` is not the original listing price**, except for items caught within
 days of listing. Sellpy marks prices down roughly 11% every 10 days, and the median item
