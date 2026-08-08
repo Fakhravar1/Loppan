@@ -74,7 +74,40 @@ LIVE = ("items?select=item_id,first_seen,price_ore,favourites,is_reserved,"
         "last_chance&outcome=is.null")
 
 
-def live_item_pages(size: int = PAGE_ITEMS, limit: int | None = None):
+def checkpoint_read(today: dt.date) -> tuple[str | None, int]:
+    """Where the last pass stopped, if it stopped today and did not finish.
+
+    A row in `track_progress` exists only while a pass is incomplete, so its
+    presence is the signal. Checkpoints from an earlier date are ignored and
+    dropped: resuming a two-day-old pass would write `last_seen` values that imply
+    the shelf was observed on a day it was not.
+    """
+    rows = db.query("track_progress?select=run_date,last_item_id,items_done")
+    if not rows:
+        return None, 0
+    row = rows[0]
+    if row["run_date"] != today.isoformat():
+        checkpoint_clear()
+        return None, 0
+    return row["last_item_id"], row["items_done"]
+
+
+def checkpoint_write(today: dt.date, last_item_id: str, items_done: int) -> None:
+    db.upsert("track_progress", [{
+        "id": 1,
+        "run_date": today.isoformat(),
+        "last_item_id": last_item_id,
+        "items_done": items_done,
+        "updated_at": dt.datetime.now(dt.UTC).isoformat(),
+    }], "id")
+
+
+def checkpoint_clear() -> None:
+    db.delete("track_progress?id=eq.1")
+
+
+def live_item_pages(size: int | None = None, limit: int | None = None,
+                    after: str | None = None):
     """Yield the unresolved rows a page at a time, newest schema fields only.
 
     Deliberately does NOT fetch `history`. The array is only needed for the ~5% of
@@ -90,10 +123,18 @@ def live_item_pages(size: int = PAGE_ITEMS, limit: int | None = None):
     Note `limit` now genuinely limits the read. It used to slice the list *after*
     fetching everything, so `--limit 5000` still spent the full 105 s and the full
     288 MB before throwing 664k rows away.
+
+    `after` resumes the walk past an item_id already covered by an earlier,
+    interrupted pass.
+
+    `size` defaults to PAGE_ITEMS at call time rather than in the signature, so the
+    knob can actually be turned — a default argument would bind the value at import
+    and quietly ignore anyone lowering it for a smaller machine.
     """
+    size = size or PAGE_ITEMS
     buf: list[dict] = []
     taken = 0
-    for chunk in db.query_pages(LIVE):
+    for chunk in db.query_pages(LIVE, after=after):
         buf.extend(chunk)
         if limit and taken + len(buf) >= limit:
             yield buf[:limit - taken]
@@ -210,10 +251,20 @@ def main() -> None:
     limit = int(sys.argv[sys.argv.index("--limit") + 1]) if "--limit" in sys.argv else None
 
     today = dt.date.today()
-    total = min(db.count(LIVE), limit or sys.maxsize)
+    resume_after, done = checkpoint_read(today)
+    # Count only what is still ahead, then add back what a previous attempt already
+    # covered, so the progress line means the same thing on a resume as on a fresh run.
+    ahead = LIVE + (f"&item_id=gt.{resume_after}" if resume_after else "")
+    total = done + min(db.count(ahead), limit or sys.maxsize)
     if not total:
         print("nothing live to track")
         return
+
+    if resume_after:
+        print(f"resuming an interrupted pass: {done:,} items already checked today, "
+              f"continuing past item_id {resume_after}")
+        print("  NOTE: disappearances found before the interruption were not "
+              "adjudicated and stay live until the next pass.")
     print(f"{total:,} live items, {(total+99)//100:,} read requests across "
           f"{algolia.MAX_WORKERS} workers, {PAGE_ITEMS:,} rows resident at a time")
 
@@ -221,9 +272,9 @@ def main() -> None:
     # that produced them is long gone — so carry the last known price along with the
     # id, rather than reaching back into a `by_id` that no longer exists.
     gone: dict[str, int | None] = {}
-    seen = written = done = 0
+    seen = written = 0
 
-    for page in live_item_pages(limit=limit):
+    for page in live_item_pages(limit=limit, after=resume_after):
         by_id = {r["item_id"]: r for r in page}
         pending = []
         for chunk_ids, results in algolia.get_objects_parallel(list(by_id)):
@@ -240,8 +291,15 @@ def main() -> None:
                 written += flush(pending)
                 pending = []
         written += flush(pending)
+        # Checkpoint only once the page's writes are durable, so a resume can never
+        # skip work that was recorded as done but never actually written.
+        checkpoint_write(today, page[-1]["item_id"], done)
         print(f"  {done:,}/{total:,} checked, {written:,} written, "
               f"{len(gone):,} gone", file=sys.stderr)
+
+    # The read is complete, so an interruption from here on costs only the
+    # adjudication, which the next pass redoes anyway.
+    checkpoint_clear()
 
     print(f"\n{seen:,} still listed, {written:,} rows changed and written, "
           f"{len(gone):,} disappeared")

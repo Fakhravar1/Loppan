@@ -168,7 +168,8 @@ def query(path: str, paginate: bool = True) -> list[dict]:
             return rows
         offset += PAGE
 
-def query_pages(path: str, key: str = "item_id", size: int = PAGE):
+def query_pages(path: str, key: str = "item_id", size: int = PAGE,
+                after: str | None = None):
     """Yield a read one page at a time, instead of accumulating the whole result.
 
     Use this over `query` for anything catalogue-sized. `query` materialises every
@@ -185,11 +186,12 @@ def query_pages(path: str, key: str = "item_id", size: int = PAGE):
     skipped or returned twice. Ordering by the key and seeking makes each page
     independent of what happened to the pages before it.
 
-    `key` must appear in the select list, and be unique.
+    `key` must appear in the select list, and be unique. `after` starts the walk
+    partway through, which is what makes an interrupted read resumable.
     """
     url, apikey = _creds()
     sep = "&" if "?" in path else "?"
-    last = None
+    last = after
 
     while True:
         q = f"{path}{sep}order={key}.asc&limit={size}"
@@ -207,6 +209,31 @@ def query_pages(path: str, key: str = "item_id", size: int = PAGE):
         yield page
         if len(page) < size:
             return
+
+
+def delete(path: str) -> None:
+    """DELETE rows matching a PostgREST filter, e.g. delete('track_progress?id=eq.1').
+
+    The filter is required by PostgREST itself — an unfiltered DELETE is rejected
+    rather than silently emptying the table — but pass one deliberately anyway.
+    """
+    url, key = _creds()
+    req = urllib.request.Request(
+        f"{url}/rest/v1/{path}",
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Prefer": "return=minimal",
+        },
+        method="DELETE",
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            resp.read()
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f"delete {path}: HTTP {exc.code} — {exc.read().decode()[:300]}"
+        ) from exc
 
 
 def count(path: str) -> int:

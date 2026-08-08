@@ -8,11 +8,16 @@ name: track enrolled items
 # week, items that sell within days of listing, sales following shortly after a
 # markdown, and listing inflow. Favourites exist ONLY in Algolia.
 #
-# Cadence is a budget decision, measured rather than guessed. A full pass over 666k
-# items takes ~66 min, so daily would be ~1,980 of the 2,000 free GitHub Actions
-# minutes per month — inside the limit but with no room for the cohort job, a manual
-# run, or a retry. Every other day is ~15 runs, ~990 min, and still resolves a sale
-# to within two days.
+# Cadence was originally a budget decision, from a ~66 min estimate for a full pass:
+# daily would have been ~1,980 of the 2,000 free minutes per month, every other day
+# ~990. Both figures were wrong. Timed 2026-08-08 over the real 668,961 items, a
+# pass is 26.8 min — ~400 min/month at this cadence, and daily would be ~810.
+#
+# So the budget no longer forces every other day. Keep it anyway: it resolves a sale
+# to within two days against a ~60-day median time to sell, and the spare minutes
+# are worth more to the other repos sharing this account's allowance. If sale-date
+# precision ever becomes the binding constraint, daily is affordable now — that is a
+# data decision, not a cost one.
 #
 # 2026-08-08: an attempt to move this job to the qvitta-pi self-hosted runner
 # (unbilled minutes) was REVERTED the same night, when the very first pass wedged
@@ -21,14 +26,14 @@ name: track enrolled items
 # The memory was then measured, and the diagnosis in the revert was wrong in the
 # direction that mattered: the pass peaked at ~7.3 GB, so it did not comfortably
 # fit the hosted runners either — this repo is private, so ubuntu-latest is the
-# 7 GB runner. The pass is now paged and its Algolia reads windowed, which puts
-# the peak at ~343 MB and keeps it flat as the sample grows. See docs/pi-runner.md.
+# 7 GB runner. The pass is now paged and its Algolia reads windowed: 84 MB peak
+# over the full sample, flat as it grows. See docs/pi-runner.md.
 #
-# That clears the code-side condition for the Pi but NOT the infrastructure ones.
-# Do not point runs-on at qvitta-pi until the runner service is cgroup-capped
-# (MemoryMax plus MemorySwapMax=0 — swap thrash, not OOM, is what killed the box,
-# and a memory cap alone would not have stopped it) and a watched pass has
-# completed under that cap. The qvitta-pi option below is kept for that.
+# Where a pass runs is now decided by the `route` job below rather than hardcoded,
+# and the Loppan runner service on the Pi is cgroup-capped (MemoryMax plus
+# MemorySwapMax=0 — swap thrash, not OOM, is what killed the box, and a memory cap
+# alone would not have stopped it). An overrun there is now a failed job that the
+# next run resumes from its checkpoint, not a wedged machine.
 #
 # NOTE: */2 matches odd days of the month, so gaps are 2 days except at month
 # boundaries (31st -> 1st is consecutive; 29th -> 1st in a 30-day month is 3 days).
@@ -41,25 +46,83 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: Runner to use
+        description: Runner to use (auto = qvitta-pi if it is online, else hosted)
         type: choice
-        default: ubuntu-latest
-        options: [ubuntu-latest, qvitta-pi]
+        default: auto
+        options: [auto, ubuntu-latest, qvitta-pi]
 
 concurrency:
   group: track
   cancel-in-progress: false   # a half-written pass is worse than a late one
 
 jobs:
+  route:
+    # Decides where the pass runs, because GitHub will not decide sensibly on its
+    # own: a job sent to an offline self-hosted runner does not fail, it QUEUES —
+    # silently, for up to 24 h, and is then cancelled. `timeout-minutes` does not
+    # catch it either, since that counts execution time and a queued job has none.
+    # Before this job existed, a dead Pi meant a silently skipped pass.
+    #
+    # Costs a few seconds of billed time per run, which is the point: it is cheap
+    # to ask, and expensive to assume.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        env:
+          # Listing self-hosted runners needs administration:read, which the default
+          # GITHUB_TOKEN cannot be granted. Without RUNNER_STATUS_TOKEN the probe
+          # cannot answer, and an unanswerable probe routes hosted — loudly. See
+          # docs/pi-runner.md for creating the token.
+          GH_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
+          CHOICE: ${{ inputs.runner }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CHOICE:-}" ] && [ "${CHOICE}" != "auto" ]; then
+            echo "runner=${CHOICE}" >> "$GITHUB_OUTPUT"
+            echo "Runner pinned by dispatch input: ${CHOICE}"
+            exit 0
+          fi
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::RUNNER_STATUS_TOKEN is not set — cannot tell whether qvitta-pi is online, so routing to hosted. The pass still runs; it just costs billed minutes."
+            echo "runner=ubuntu-latest" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ready=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runners" \
+            --jq '[.runners[]
+                   | select(any(.labels[]; .name == "qvitta-pi"))
+                   | select(.status == "online" and .busy == false)] | length' \
+            2>/dev/null || echo "probe-failed")
+          if [ "$ready" = "probe-failed" ]; then
+            echo "::warning::Could not read runner status (token scope or API error) — routing to hosted."
+            echo "runner=ubuntu-latest" >> "$GITHUB_OUTPUT"
+          elif [ "$ready" -ge 1 ]; then
+            echo "qvitta-pi is online and idle — routing there (unbilled)."
+            echo "runner=qvitta-pi" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::qvitta-pi is offline or busy — routing to hosted so the pass still happens."
+            echo "runner=ubuntu-latest" >> "$GITHUB_OUTPUT"
+          fi
+
   track:
-    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    needs: route
+    runs-on: ${{ needs.route.outputs.runner }}
     timeout-minutes: 300
     steps:
       # SHA-pinned: this job holds the service_role key, which bypasses all RLS.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Skipped on the Pi: setup-python has no dependable prebuilt for Ubuntu 24.04
+      # arm64 and there is no tool cache on that box, so it would try to build from
+      # source. The Pi already carries the matching interpreter system-wide (3.12.3).
+      # Both paths are invoked as `python3`, which setup-python also provides.
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        if: runner.environment == 'github-hosted'
         with:
           python-version: "3.12"
+      - name: Report the interpreter actually in use
+        run: python3 -VV
       - name: Check enrolled items and adjudicate disappearances
         env:
           LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
@@ -74,9 +137,9 @@ jobs:
             exit 1
           fi
           if [ -x /usr/bin/time ]; then
-            /usr/bin/time -v python loppan/track.py
+            /usr/bin/time -v python3 loppan/track.py
           else
-            python loppan/track.py
+            python3 loppan/track.py
           fi
 
       - name: Rebuild peer prices for the dashboard
@@ -85,4 +148,4 @@ jobs:
         # Must run AFTER the sweep: peer groups are built from live items and their
         # current prices, so refreshing first would rank against yesterday's shelf.
         # ~56s for 669k items.
-        run: python -c "import sys; sys.path.insert(0,'.'); from loppan import db; print('peer_prices:', db.rpc('refresh_peer_prices'))"
+        run: python3 -c "import sys; sys.path.insert(0,'.'); from loppan import db; print('peer_prices:', db.rpc('refresh_peer_prices'))"
