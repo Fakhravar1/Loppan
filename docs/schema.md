@@ -100,9 +100,62 @@ feature built on it measures time-at-current-price.
 
 | Column | What it is |
 |---|---|
-| `stratum` | A brand-balanced · B pooled tail · L migrated legacy |
+| `stratum` | A brand-balanced · B pooled tail · N newly listed · **C Circle census** · L migrated legacy |
 | `sample_weight` | How many real listings this row stands for |
 | `price_band` | 0 <200kr · 1 200–299 · 2 300–499 · 3 500–999 · 4 1000+ |
+
+⚠️ **Stratum C is a census, not a sample**, so its `sample_weight` is 1.0. That is only
+true while it holds every Circle listing at or above the floor — 14,781 tracked against
+a live population of 14,728 as of 2026-08-08. `enrol.py --stratum C` warns if it falls
+short, and a shortfall makes the weight wrong rather than merely imprecise.
+
+---
+
+## Circle round trips
+
+**`circle_origins`** — the purchase side of a Circle resale: what the reseller paid Sellpy
+for the item they are now reselling. Keyed by the **Circle** `item_id`, reached via the
+`preceding` pointer on the Parse `Item`.
+
+| Column | What it is |
+|---|---|
+| `original_id` | The listing the seller originally bought |
+| `bought_price_ore` | Last price the original ever carried = what they paid |
+| `original_opening_ore` | First price it carried, before any markdown |
+| `original_rungs` | How many price steps the original went through |
+| `bought_discount` | `1 - bought/opening` — how marked down it was at purchase |
+
+⚠️ **Öre here, kronor in `cohort_items`.** Parse quotes kronor;
+`backfill_item_origins.py` converts on the way in so this table matches `items.*_ore`.
+The older `backfill_circle_origin.py` writes kronor into `cohort_items`. The two are
+deliberately not shared code — unifying them without unifying the units would corrupt one.
+
+⚠️ **Collect this while the item is still live.** The sale price arrives on its own from
+the tracker, but the purchase price lives on the *original* listing and nothing guarantees
+that stays reachable. Fifteen Circle sales were recorded before any origin existed, and
+each one was priceable only because the original happened to survive.
+
+**`v_tracked_roundtrips`** — `items` ⋈ `circle_origins`, giving `asking_multiple`,
+`realised_multiple`, `profit_ore` and `days_paid_to_sold`.
+
+Sellpy keeps 16% of a Circle sale, so **break-even is a gross multiple of 1.19×**.
+`profit_ore` is null unless `outcome = 'sold'`: a final price on an expired listing is an
+asking price nobody paid, and counting it as revenue would invent profit.
+
+Three Circle populations exist and are **not** interchangeable:
+
+| Source | n | What it can say |
+|---|---|---|
+| `circle_roundtrips` | 240 | Backward sample. **Structurally zero sales** — sold items are deleted from the index before a backward sample can see them |
+| `v_circle_outcomes` | 500 | The frozen cohort stratum, enrolled 2026-08-04 |
+| `v_tracked_roundtrips` | filling → 14,781 | The tracked census. The only one that will accumulate sales at scale |
+
+The view inner-joins `circle_origins`, so it holds only what the backfill has reached so
+far. First 13 priced sales, 2026-08-08: **median realised multiple 1.00×** against a
+1.19× break-even, −1,005 kr across the thirteen. That sample is the *fast* tail — items
+that sold within days of enrolment, against a ~60-day median time to sell — so it is
+biased toward whatever sells quickest, which is generally whatever is underpriced. Treat
+it as a first reading, not the answer.
 
 ---
 

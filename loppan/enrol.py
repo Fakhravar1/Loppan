@@ -16,8 +16,13 @@ So two strata, with weights recorded so population estimates stay possible:
      ERRORS, and errors should be commonest on obscure brands their model has least
      data for. Dropping the tail would discard the likeliest source of edge.
 
+Stratum C is the exception to all of the above: it is a census of Circle listings
+rather than a sample, because that population is small and is the only one that can
+say whether reselling pays. See `stratum_c`.
+
     python loppan/enrol.py --stratum A
     python loppan/enrol.py --stratum B --target 100000
+    python loppan/enrol.py --stratum C --target 20000
     python loppan/enrol.py --stratum A --dry-run
 """
 
@@ -405,6 +410,91 @@ def stratum_n(target: int, dry: bool) -> int:
     return written
 
 
+def stratum_c(target: int, dry: bool) -> int:
+    """Enrol Circle listings — the resale side of the market — as close to a census
+    as the API allows.
+
+    Every other stratum samples. This one tries to take the lot, because the Circle
+    population is small (14,729 wearables at or above the floor, against 6.6M
+    listings overall) and it is the only population that can answer whether reselling
+    is profitable at all. At that size, sampling buys nothing and costs statistical
+    power we do not have: the tracker had 3,671 Circle items and only 15 resolved
+    sales to show for months of sweeping.
+
+    Inclusion probability is therefore ~1 and the weight is 1.0 — but only while the
+    stratum really does take everything. If `target` is set below the population, the
+    weight recorded here becomes a lie. That is why the shortfall is reported loudly
+    at the end rather than left for someone to infer.
+
+    ⚠️ `isOnShelf:true` is not a configured filter attribute in Algolia — it matches
+    nothing and does NOT error (see loppan/algolia.py). `isForSale:true` is the one
+    that works. Getting this wrong yields a silent zero-item run that looks fine.
+    """
+    circle = "p2p:true AND isForSale:true"
+    f0, ff = algolia.wearable_filter(MIN_PRICE_KR)
+    population = algolia.search(filters=f"{circle} AND {f0}", facet_filters=ff,
+                                hits_per_page=0).get("nbHits", 0)
+
+    # A single query shape stops paginating after ~3 pages, so reach comes from the
+    # number of distinct shapes rather than from paging deeper — the same constraint
+    # stratum B and N work around.
+    bands = [(100,124),(125,149),(150,174),(175,199),(200,249),(250,299),
+             (300,349),(350,399),(400,499),(500,599),(600,799),(800,999),
+             (1000,1499),(1500,2499),(2500,None)]
+    shapes = [(lo, hi, cat) for lo, hi in bands for cat in algolia.WEARABLE]
+    print(f"{population:,} Circle listings at or above {MIN_PRICE_KR} kr; "
+          f"taking up to {target:,} over {len(shapes)} shapes")
+    if dry:
+        return 0
+
+    today = dt.date.today().isoformat()
+    written = 0
+
+    for page in range(3):
+        for lo, hi, cat in shapes:
+            if written >= target:
+                break
+            f = (f"{circle} AND price_SE.amount>={lo*100}"
+                 + (f" AND price_SE.amount<={hi*100}" if hi else ""))
+            hits = algolia.search(filters=f, facet_filters=[[f"categories.lvl1:{cat}"]],
+                                  hits_per_page=1000, page=page).get("hits", [])
+            if not hits:
+                continue
+
+            # Never reclassify an item we already hold: a Circle item that arrived via
+            # A, B or N keeps its stratum and its weight, or the sampling design rots.
+            ids = [h["objectID"] for h in hits]
+            known = set()
+            for i in range(0, len(ids), 200):
+                chunk = ",".join(ids[i:i + 200])
+                known.update(r["item_id"] for r in
+                             db.query(f"items?select=item_id&item_id=in.({chunk})"))
+            fresh = [h for h in hits if h["objectID"] not in known]
+            if not fresh:
+                continue
+
+            _prepare(fresh)
+            rows = [row_of(h, "C", 1.0, today) for h in fresh]
+            for row in rows:
+                p = row.get("first_price_ore") or 0
+                row["price_band"] = (0 if p < 20000 else 1 if p < 30000
+                                     else 2 if p < 50000 else 3 if p < 100000 else 4)
+            db.upsert("items", rows, "item_id")
+            written += len(rows)
+            print(f"  p{page} {lo}-{hi or '+'} {cat[:14]:14s} +{len(fresh):4d} "
+                  f"({written:,})", file=sys.stderr)
+        if written >= target:
+            break
+
+    held = db.count("items?select=item_id&p2p=is.true&limit=1")
+    print(f"  {held:,} of {population:,} Circle listings now tracked")
+    if held < population:
+        print(f"  ⚠️ {population - held:,} not reached — sample_weight 1.0 assumes a "
+              f"census, so treat population estimates from stratum C as provisional "
+              f"until this closes.")
+    return written
+
+
 def main() -> None:
     if not db.configured():
         sys.exit("LOPPAN_SUPABASE_KEY is not set")
@@ -422,8 +512,10 @@ def main() -> None:
         n = stratum_b(target, dry)
     elif u == "N":
         n = stratum_n(target, dry)
+    elif u == "C":
+        n = stratum_c(target, dry)
     else:
-        sys.exit(f"unknown stratum {stratum!r} — use A, B or N")
+        sys.exit(f"unknown stratum {stratum!r} — use A, B, N or C")
     print(f"\nenrolled {n:,} items into stratum {stratum.upper()}")
 
 

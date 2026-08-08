@@ -123,6 +123,33 @@ self-imposed: one request per second (`sellpy.MIN_INTERVAL_S`), no distributed
 crawling, no redistribution of the data, one account. The exposure that matters
 isn't the scraper breaking — it's the account.
 
+### What "one request per second" is actually protecting (2026-08-09)
+
+Two things were measured while moving 14,800 Circle origins, and both refine the
+rule rather than relax it.
+
+**Nothing here authenticates as a user.** `sellpy.py` sends `_ApplicationId`,
+`_JavaScriptKey` and `_ClientVersion` — the public browser-SDK keys served in every
+visitor's bundle — and no session token, cookie or `Authorization` header. So the
+account is not attached to this traffic at the auth layer, and the realistic worst
+case is an IP being rate-limited or blocked, which breaks a crawl and is
+recoverable. The residual account exposure is **correlation**: the crawl leaving the
+same household IP that also carries a logged-in Sellpy session. That is an argument
+about where the traffic originates, not about how fast it goes.
+
+**A Parse request costs ~0.24 s of latency against a 1.0 s interval**, so at the
+default roughly 76% of a pass is deliberate waiting rather than work. Lowering the
+interval therefore speeds a job up almost proportionally, until latency binds at
+around 0.25 s. `backfill_item_origins.py --interval` does this **scoped to one job**:
+2.04 → 0.60 s/item measured, a 3.4× speedup.
+
+⚠️ Two lines this does not cross, and should not. It stays **strictly serial** — one
+request in flight, never a worker pool — so "no distributed crawling" is untouched;
+and it does not change `sellpy.MIN_INTERVAL_S` itself, because that global also
+governs `track.py`'s adjudication and the cohort checks, which were sized against
+1 req/s and are nowhere near this hot. Re-tune per job, with a measurement, not
+globally.
+
 ---
 
 # The Typesense search index — added 2026-08-04

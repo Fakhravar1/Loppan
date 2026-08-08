@@ -17,10 +17,22 @@ name: enrol new listings
 #
 # Cadence matches the tracker so the two stay in step, and LOOKBACK_DAYS is 3 against
 # a 2-day gap, so a missed run does not open a hole. Cost is a few minutes a run.
+#
+# ---------------------------------------------------------------------------------
+# This workflow carries TWO schedules, deliberately on different cadences.
+#
+#   06:00 every other day  -> stratum N, newly listed items (above)
+#   06:30 daily            -> the Circle top-up (see the circle job)
+#
+# They are gated on `github.event.schedule` rather than sharing one cron, because
+# making the whole file daily would also double stratum N — 5,000 items a day instead
+# of every other day — which changes the sampling design as a side effect of wanting a
+# daily Circle pass. A manual dispatch runs both.
 
 on:
   schedule:
-    - cron: "0 6 */2 * *"   # every other day, after the tracker and cohort check
+    - cron: "0 6 */2 * *"    # every other day, after the tracker and cohort check
+    - cron: "30 6 * * *"     # daily, Circle top-up
   workflow_dispatch:
 
 concurrency:
@@ -29,6 +41,7 @@ concurrency:
 
 jobs:
   enrol:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 6 */2 * *'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -46,3 +59,41 @@ jobs:
             exit 1
           fi
           python loppan/enrol.py --stratum N --target 5000
+
+  # The Circle top-up. Two steps, and only the second one is time-critical.
+  #
+  # Enrolling keeps stratum C a census rather than a snapshot of the day it was first
+  # run — its sample_weight of 1.0 is only honest while it holds every Circle listing
+  # at or above the floor. Measured inflow is ~100-125 new Circle listings a day.
+  #
+  # Capturing origins is the part that cannot wait. A sale price arrives on its own:
+  # track.py sees the item vanish and adjudicates it against Parse. The PURCHASE price
+  # lives on a different listing entirely — the `preceding` item the reseller bought —
+  # and nothing guarantees that stays reachable. Miss it and the round trip is
+  # unpriceable: sell-through with no profitability, which is the state the tracker was
+  # in when it had 15 Circle sales recorded and not one origin to price them against.
+  circle:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 6 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # SHA-pinned: this job holds the service_role key, which bypasses all RLS.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Top up the Circle census and capture origins
+        env:
+          LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
+        run: |
+          if [ -z "$LOPPAN_SUPABASE_KEY" ]; then
+            echo "::error::LOPPAN_SUPABASE_KEY is not set — nothing could be written."
+            exit 1
+          fi
+          python loppan/enrol.py --stratum C --target 5000
+          # --limit bounds Sellpy request volume per run, which is what makes this
+          # schedulable at all: ~120 new items a day against a 400 ceiling is 3x
+          # headroom for a missed run or an inflow spike, and ~24 min at the measured
+          # 1.8 s/item. It doubles as a catch-up — while the initial 14.8k backfill is
+          # still incomplete, each run chips 400 off the remainder.
+          python loppan/backfill_item_origins.py --limit 400
