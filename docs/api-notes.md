@@ -87,8 +87,27 @@ Base filter `{"region": "SE", "latest": true}`.
 - **Sale date is the last offer's `endedAt`, not `Item.paidAt`.** `paidAt` is the
   seller payout — same day for consignment, but **21–24 days later for Circle**
   sales (measured, n=3).
-- **`Item.itemStatus`** — `utlagd` listed, `betald` sold, `vilande` dormant
-  (observed after a cancelled Circle sale).
+- **`Item.itemStatus`** — four values observed, and **two of them mean sold**:
+
+  | Status | Meaning | Outcome |
+  |---|---|---|
+  | `utlagd` | listed | still listed |
+  | **`såld`** | **sold, payout to the seller still pending** | **sold** |
+  | `betald` | sold and paid out | sold |
+  | `vilande` | dormant (observed after a cancelled Circle sale) | expired |
+  | `skänkt` | donated — Sellpy gives away what it cannot sell | expired |
+
+  ⚠️ **Never test `itemStatus == "betald"` to mean sold.** `betald` is sold *and
+  paid out*, and the payout lands 21–24 days after a Circle sale (above), so that
+  test silently misses nearly every recent sale. Measured on the cohort: **49 of
+  52 sales were `såld`, only 3 `betald`** — the naive test would have found 6% of
+  them. It had already recorded two real sales in `item_ladders` as unsold.
+
+  Use `cohort.STATUS_OUTCOME`, which is the single mapping, rather than comparing
+  strings in each caller. An unrecognised status maps to `unknown`, which is
+  deliberately **not** terminal so it gets flagged rather than guessed — but note
+  that a *known* status left unmapped is then re-fetched on every run forever, as
+  `skänkt` was 26 times before it was added.
 - **Circle listings are ordinary `Item` records** carrying
   `p2pValueShare: {version: 1, customerShare: 0.8}`.
 - **`sellabilityEstimate`** `{score, cutoff, isReliable, version}` — Sellpy's own

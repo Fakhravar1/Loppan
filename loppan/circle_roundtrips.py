@@ -23,7 +23,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from loppan import search, sellpy
+from loppan import cohort, search, sellpy
 
 DATA = pathlib.Path(__file__).resolve().parent.parent / "data"
 KEEP_SHARE = 0.84  # Circle payout taken as Sellpy credit (+5% on the 80% share)
@@ -62,7 +62,13 @@ def roundtrip(circle_id: str) -> dict | None:
     final = circle_ladder[-1]["pricing"]["amount"]
     ended_on = _day(circle_ladder[-1].get("endedAt"))
 
-    sold = circle.get("itemStatus") == "betald"
+    # Not `== "betald"`. That is sold AND paid out, and the Circle payout lands
+    # 21-24 days after the sale (same day for consignment) — so testing it alone
+    # silently misses roughly every Circle sale of the last three weeks, which is
+    # exactly the window this file exists to measure. `såld` is the same sale with
+    # the payout still pending. One mapping, in cohort.STATUS_OUTCOME, so a new
+    # status is learned once rather than in each caller.
+    sold = cohort.STATUS_OUTCOME.get(circle.get("itemStatus")) == "sold"
     original = sellpy.item(original_id)
     meta = original.get("metadata") or {}
     score = original.get("sellabilityEstimate") or {}

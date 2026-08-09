@@ -140,6 +140,15 @@ STATUS_OUTCOME = {
     "såld": "sold",      # sold, payout to the seller still pending
     "betald": "sold",    # sold and paid out
     "vilande": "expired",  # dormant — listed and never sold
+    # Sellpy donates what it cannot sell, so this is the terminal state of an
+    # unsold item rather than a third kind of thing. Grouped with `vilande`
+    # because every sell-through figure needs "left the market without selling",
+    # and the raw `status` column keeps the distinction for anyone who wants it.
+    #
+    # It was previously unmapped and so fell through to "unknown", which is NOT
+    # terminal — 26 items were being re-fetched from Parse on every run, forever,
+    # and could never resolve. That is the cost of leaving a known status unmapped.
+    "skänkt": "expired",
 }
 TERMINAL = {"sold", "expired"}
 

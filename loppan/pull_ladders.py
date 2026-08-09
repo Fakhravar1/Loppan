@@ -18,7 +18,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from loppan import sellpy
+from loppan import cohort, sellpy
 
 DATA = pathlib.Path(__file__).resolve().parent.parent / "data"
 
@@ -61,7 +61,11 @@ def summarise_ladder(item_id: str, item: dict, offers: list[dict]) -> dict | Non
         "has_defect": bool(meta.get("defects")),
         "product_id": meta.get("productId"),
         "status": item.get("itemStatus"),
-        "sold": item.get("itemStatus") == "betald",
+        # `betald` is sold AND paid out; `såld` is the same sale with the payout
+        # still pending, which for Circle is 21-24 days later. Testing only the
+        # former recorded two real sales here as unsold. cohort.STATUS_OUTCOME is
+        # the single mapping — the raw status stays above, so nothing is lost.
+        "sold": cohort.STATUS_OUTCOME.get(item.get("itemStatus")) == "sold",
         "score": score.get("score"),
         "score_version": score.get("version"),
         "cutoff": score.get("cutoff"),
