@@ -152,11 +152,100 @@ globally.
 
 ---
 
-# The Typesense search index — added 2026-08-04
+# The Algolia index — the storefront's own search surface (added 2026-08-08)
 
 Everything above describes Parse, which cannot filter by price, brand or date and
-tops out around 9,000 rows. The search index has none of those limits and carries
-fields that exist nowhere in the Parse objects. **This is the primary surface.**
+tops out around 9,000 rows. Two search indexes lift those limits, and it matters
+which one you reach for. **Algolia is the index the sellpy.se storefront actually
+browses, and it is the primary discovery surface here.** The Typesense collection
+documented in the next section is a ~5% subset of it, kept only for the two fields
+it uniquely carries.
+
+Client is `loppan/algolia.py`; `loppan/enrol.py` reads Algolia hits, so the current
+enrolment path is Algolia-based. Index **`prod_marketItem_se_relevance`**,
+**12,475,724 documents** (measured 2026-08-08, `exhaustiveNbHits: true`). The app id
+and search key are the ones every visitor's browser holds — scoped and search-only.
+
+## How the two indexes relate
+
+| | Algolia | Typesense (`market_items`) |
+|---|---|---|
+| Documents | ~12.5M | 586,746 |
+| Scope | the whole market | a ~5% subset |
+| Overlap | **99.8%** of Typesense items are also here | only **6.8%** of Algolia items are here |
+
+So a Typesense-scoped count is very nearly a subset of an Algolia one, but never the
+reverse — and Typesense is close to useless as a measure of market size.
+
+(The Typesense figure is the 586,746 recorded in `algolia.py` when the overlap was
+measured. The section below says 584,041, measured 2026-08-04. Both are right for
+their date; the collection drifts. The ~5% relationship is what matters, and it is
+not sensitive to which one you take.)
+
+## What each source uniquely carries
+
+| Only in Algolia | Only in Typesense |
+|---|---|
+| the whole market | **`priceToEstimateRatio`** |
+| `weight` | **`sellabilityEstimate`** |
+| `priceDrop_SE.oldPrice` | |
+| regional favourite buckets | |
+| `firstOfferedAt_SE` | |
+
+Neither `priceToEstimateRatio` nor `sellabilityEstimate` is in Parse either, which is
+the whole reason the Typesense section below survives. Confirmed absent from Algolia
+hits on inspection (0 of 20 sampled documents carried either).
+
+**The favourite fields are spelled two different ways.** The plain count is British —
+`favouriteCount` — while the buckets are American: `favoriteCountBucket`,
+`favoriteCountBucket_NORDIC`, `favoriteCountBucket_EU`, `favoriteCountBucket_DACH`.
+The regional buckets are frequently null; the unsuffixed one was populated on every
+sampled document.
+
+## Traps
+
+- ⚠️ **Filtering on an unconfigured attribute returns 0 — it does not error.**
+  `isOnShelf:true` silently matches nothing. **Use `isForSale:true`** (10.9M).
+  This is nastier than it sounds: `isOnShelf` *is* present on the documents
+  themselves (20 of 20 sampled), so the field looks real, and the zero comes back
+  with `exhaustiveNbHits: true` — an answer that reads as a confident, exact "none".
+  Every other attribute probed (`p2p`, `isForSale`, `isReserved`, `lastChance`,
+  `weight`, `favouriteCount`, `favoriteCountBucket`, `price_SE.amount`,
+  `firstOfferedAt_SE`, `priceDrop_SE.oldPrice.amount`, `saleStartedAt`) filters
+  correctly.
+- ⚠️ **`nbHits` is often an estimate — read `exhaustiveNbHits` on every query.**
+  The unfiltered total is exact. Filtered results are exact while the result set is
+  small and become estimates once it is large: measured 2026-08-08, 27,238 and 1,069
+  and 672 all came back exact, while 238,577 and 925,882 and everything above them
+  did not. The flip sits somewhere between those, so do not infer it from whether a
+  filter is present — read the flag.
+- **`saleStartedAt` is not the listing date.** It is when the current price step
+  began; median gap to `firstOfferedAt_SE` is 79 days.
+- **Sold items are deleted from the index.** 0 of 200 known-sold items remained,
+  while 8 of 8 expired ones did. Disappearance is a usable sale signal, but only for
+  items seen beforehand.
+- **A single query shape stops paginating after ~2,000 results.** Reach comes from
+  splitting the population into many shapes (price band × category) rather than
+  walking one deep — see the band/category fan-out in `enrol.py`.
+
+## Conduct
+
+Algolia is third-party CDN infrastructure built for high query rates — the storefront
+fires several requests per page view — so `algolia.py` runs at
+`MIN_INTERVAL_S = 0.05` across 8 workers. **This is deliberately not the same
+judgement as `sellpy.py`**, which talks to Sellpy's own Parse backend at one request
+per second, strictly serial, because there the exposure is the account.
+
+---
+
+# The Typesense search index — added 2026-08-04
+
+⚠️ **A ~5% subset, and no longer the primary discovery surface.** This section
+originally called Typesense primary; that was wrong, and it predates the Algolia work
+above. Keep it for one reason only: **`priceToEstimateRatio` and
+`sellabilityEstimate` exist nowhere else** — not in Algolia, not in Parse. For
+anything about the market as a whole, and for all discovery, use Algolia.
+`docs/schema.md` accordingly calls this "the abandoned Typesense index".
 
 Config comes from the GraphQL query `getTypesenseClientConfig` (see
 `loppan/search.py`, which fetches it at runtime rather than hardcoding it). The
@@ -169,9 +258,14 @@ returned documents and probing filter names.
 
 ## Fields that matter, and are absent from Parse
 
+Absent from Parse, but **most of these are also in Algolia** — only
+`priceToEstimateRatio` and `sellabilityEstimate` are exclusive to this index. The
+rest are listed here because this is where they were first found, not because
+Typesense is the place to read them.
+
 | Field | Note |
 |---|---|
-| **`priceToEstimateRatio`** | **Sellpy's own current-price ÷ their value estimate.** The single most useful field found. |
+| **`priceToEstimateRatio`** | **Sellpy's own current-price ÷ their value estimate.** Exclusive to this index, and the single most useful field found. |
 | **`favouriteCount`** / `regularFavouriteCount` | Demand signal. Filterable but **not sortable**. |
 | **`lastChance`** | Boolean — the item is near end of life. Powers `/store/selection/last-chance-items`. |
 | **`price_SE`** | `{amount, currency}` — **amount is in ÖRE**. Filter path is `price_SE.amount`. 200000 = 2,000 kr. |
@@ -193,7 +287,12 @@ and decoded at read time, so the display format can change without re-collecting
 **No price field is exposed at the top level** — `price` / `currentPrice` /
 `salePrice` all 404. It is `price_SE.amount`, and it is in öre.
 
-## Population, measured 2026-08-04
+## Population **within Typesense**, measured 2026-08-04
+
+⚠️ **Every count below is scoped to this ~5% subset. None of it is market-wide.**
+Read them as "of the 584,041 documents in `market_items`", never as "of Sellpy".
+The Circle row in particular understates the real pool by more than an order of
+magnitude — see the Algolia counts underneath.
 
 | Segment | Count |
 |---|---|
@@ -201,7 +300,7 @@ and decoded at read time, so the display format can change without re-collecting
 | **≥ 2,000 kr** | **700** |
 | 1,500–2,000 kr | 1,562 |
 | < 400 kr | 487,705 (92%) |
-| **Circle listings (`p2p:true`)** | **15,008** (2,310 on shelf) |
+| **Circle listings (`p2p:true`)** | **15,008** (2,310 on shelf) — **subset-scoped, see below** |
 | Circle + premium brand | 1,134 |
 | Premium brand (tier ≥4) | 137,243 |
 | `lastChance` on shelf | 12,389 — **none priced ≥1,000 kr** |
@@ -212,12 +311,32 @@ and decoded at read time, so the display format can change without re-collecting
 Brand counts for the four known trades: COS 2,601 · Carhartt WIP 322 ·
 Dr. Martens 251 · Ambika 56.
 
+## The same Circle question, asked of Algolia (measured 2026-08-08)
+
+| Query | `nbHits` | `exhaustiveNbHits` |
+|---|---|---|
+| index total, unfiltered | **12,475,724** | ✅ true — solid |
+| `p2p:true` | 925,882 | ❌ false — an estimate, treat as an order of magnitude |
+| **`p2p:true AND isForSale:true`** | **27,238** | ✅ **true — solid** |
+
+**27,238 Circle items are currently for sale, against the 2,310 "on shelf" the
+Typesense table implies — roughly 12×.** That exact figure is the one to quote:
+it is the live-listing count and it comes back exhaustive. The ~926k `p2p:true`
+total is an estimate and includes items no longer for sale, so it is not a
+substitute.
+
+Do not filter this with `isOnShelf:true` — that attribute is not configured for
+filtering in Algolia and returns a confident-looking exact zero. `isForSale:true`
+is the working equivalent.
+
 ## Recommended workflow
 
-1. **Select** with the search index — brand, price band, Circle, favourites,
-   price-to-estimate. Cheap, deep, and filterable.
-2. **Enrich** with Parse by item id — the full markdown ladder, warehouse dwell,
-   `sellabilityEstimate`, terminal status. One request per item, so select first.
+1. **Select** with **Algolia** — the whole market, filterable by brand, price band,
+   Circle and favourites. This is the discovery surface.
+2. **Add `priceToEstimateRatio` / `sellabilityEstimate` from Typesense** where the
+   item is one of the ~6.8% that exist there. Nothing else needs this index.
+3. **Enrich** with Parse by item id — the full markdown ladder, warehouse dwell,
+   terminal status. One request per item, so select first.
 
 ## Warning about `priceToEstimateRatio`
 
