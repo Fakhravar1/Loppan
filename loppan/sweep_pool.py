@@ -78,14 +78,77 @@ def bucket_of(brand: str) -> int:
     return zlib.crc32(brand.encode()) % BUCKETS
 
 
-def todays_bucket(today: dt.date) -> int:
-    """Rotate one bucket a day, so the whole market is covered every BUCKETS days."""
-    return today.toordinal() % BUCKETS
+def next_bucket() -> int:
+    """Whichever bucket has gone longest without a sweep.
+
+    Not a formula over the date. The job runs four times a day, so `date % BUCKETS`
+    would pick the same bucket every time and never advance — and any date-and-hour
+    formula silently skips a bucket whenever a run fails, with nothing to notice.
+
+    Asking the data is self-correcting: a bucket that failed stays the oldest and is
+    retried first, and one never swept sorts ahead of everything.
+    """
+    return int(db.rpc("next_sweep_bucket", {"p_buckets": BUCKETS}))
 
 
 def brands_in_bucket(bucket: int) -> list[str]:
     rows = db.query("brands?select=name&order=name.asc")
     return [r["name"] for r in rows if r["name"] and bucket_of(r["name"]) == bucket]
+
+
+# A single Algolia query shape stops paginating at roughly this many results, whatever
+# nbHits claims. Hit it and the rest of the shape is simply invisible.
+SHAPE_CEILING = 2000
+CEILING_KR = 20000   # treated as "no upper bound" when splitting; nothing here is dearer
+MAX_SPLITS = 8       # 2^8 slices is far past the point any brand still overflows
+
+
+def _fetch_shape(ff: list[list[str]], brand: str, lo_kr: int, hi_kr: int | None,
+                 depth: int = 0) -> list[dict]:
+    """Every listing for one brand in one size shape, splitting on price when capped.
+
+    The cap is the reason this is recursive rather than a loop. Ten brands market-wide
+    hold more than ~6,000 target-size items -- Zara alone has ~21,000 -- and for those a
+    flat query returns the first 2,000 and silently drops the rest.
+
+    That is not a random 2,000. `enrol.py` measured Algolia's relevance order favouring
+    expensive items: on COS it put 15% of the sample under 200 kr where the population
+    is 35%. So a truncated brand skews expensive, its median comes out too high, and its
+    items look cheaper than they are -- the same false-bargain direction a thin peer
+    group produces, and the whole point of the rotation is that the group is COMPLETE.
+
+    Splitting by price is the fix `enrol.py` already uses. Recursive rather than a fixed
+    band list because the price distribution is heavily skewed to the cheap end: a fixed
+    200-299 band would itself overflow for Zara, and only splitting where it actually
+    overflows keeps the extra requests on the handful of brands that need them.
+    """
+    price = f"price_SE.amount>={lo_kr * 100}"
+    if hi_kr is not None:
+        price += f" AND price_SE.amount<{hi_kr * 100}"
+
+    out: list[dict] = []
+    page = 0
+    while True:
+        r = algolia.search(filters=f"isForSale:true AND {price}",
+                           facet_filters=list(ff) + [[f"metadata.brand:{brand}"]],
+                           hits_per_page=PER_SHAPE, page=page)
+        got = r.get("hits", [])
+        out.extend(got)
+        if len(got) < PER_SHAPE or len(out) >= SHAPE_CEILING:
+            break
+        page += 1
+
+    if len(out) < SHAPE_CEILING or depth >= MAX_SPLITS:
+        return out
+
+    # Capped. Throw this slice away and re-fetch it in halves -- keeping it would mean
+    # mixing a biased 2,000 with the complete halves that follow.
+    hi = hi_kr if hi_kr is not None else CEILING_KR
+    if hi - lo_kr <= 1:
+        return out                      # cannot split a 1 kr range any further
+    mid = lo_kr + (hi - lo_kr) // 2
+    return (_fetch_shape(ff, brand, lo_kr, mid, depth + 1)
+            + _fetch_shape(ff, brand, mid, hi_kr, depth + 1))
 
 
 def sweep(bucket: int, dry: bool) -> int:
@@ -101,25 +164,13 @@ def sweep(bucket: int, dry: bool) -> int:
         return 0
 
     enrol._load_caches()
-    price_filter = f"isForSale:true AND price_SE.amount>={MIN_PRICE_KR * 100}"
     today = dt.date.today().isoformat()
     staged = seen_brands = 0
 
     for i, brand in enumerate(brands, 1):
         hits: list[dict] = []
         for _demo, ff in shapes:
-            page = 0
-            while True:
-                r = algolia.search(filters=price_filter,
-                                   facet_filters=list(ff) + [[f"metadata.brand:{brand}"]],
-                                   hits_per_page=PER_SHAPE, page=page)
-                got = r.get("hits", [])
-                hits.extend(got)
-                # Algolia stops paginating a single shape after ~2,000 results, so a
-                # short page is the end whether or not nbHits agrees.
-                if len(got) < PER_SHAPE or len(hits) >= 2000:
-                    break
-                page += 1
+            hits.extend(_fetch_shape(ff, brand, MIN_PRICE_KR, None))
 
         # A brand too thin to form a group of 8 cannot produce a peer comparison at any
         # level we use, so staging it would only cost a round trip.
@@ -154,7 +205,7 @@ def main() -> None:
 
     dry = "--dry-run" in sys.argv
     today = dt.date.today()
-    bucket = int(_arg("--bucket", todays_bucket(today)))
+    bucket = int(_arg("--bucket")) if _arg("--bucket") else next_bucket()
     print(f"pool sweep for {today.isoformat()}, bucket {bucket} of {BUCKETS}")
 
     # Staging is transient and single-tenant. A leftover from a crashed run would be

@@ -24,7 +24,19 @@ name: pool sweep
 
 on:
   schedule:
-    - cron: "23 7 * * *"    # daily, after track (04:30) and enrol (06:17 / 06:43)
+    # Four a day. Twelve buckets, so the whole market is covered every three days and
+    # nothing in the pool is more than three days old.
+    #
+    # Spread across the day rather than bunched: each run is ~13 min and holds a bucket
+    # in `sweep_staging` while it works, so overlapping two would double the transient
+    # storage for no benefit. `concurrency` below is the real guard; the spacing just
+    # means it never has to fire.
+    #
+    # 07:23 sits after track (04:30) and enrol (06:17 / 06:43) so brand_daily is fresh.
+    - cron: "23 7 * * *"
+    - cron: "23 12 * * *"
+    - cron: "23 17 * * *"
+    - cron: "23 22 * * *"
   workflow_dispatch:
     inputs:
       bucket:
