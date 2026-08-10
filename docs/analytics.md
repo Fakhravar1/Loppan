@@ -632,11 +632,30 @@ python loppan/sweep_pool.py --limit 40 # a slice, for testing only
 `sweep_staging` holds the bucket, `refresh_pool_bucket()` computes its peer groups,
 writes the survivors into `shortlist_daily` with `swept_on`, and **truncates staging**.
 
-First run, 40 brands of bucket 0: 1,005 items staged from 11 brands with enough depth,
-201 kept, staging emptied, 31 s. Extrapolates to roughly 22 minutes for a full bucket.
+### First full bucket, 2026-08-10 — measured
+
+| | |
+|---|---|
+| Brands in bucket 0 | 1,550 |
+| …with 8+ live items, so able to form a group | **446** |
+| Items staged | **41,212** |
+| Kept in the pool | **8,363** |
+| Peak staging | **17 MB** |
+| Wall time | **13.2 min** |
 
 Every invariant held: `peer_n` never below 12, `peer_pct` never above 25, only levels 1
-and 2, and every row carried an image and a decoded size area.
+and 2, every row imaged, and staging emptied at the end.
+
+**Twelve buckets therefore projects to ~494,500 items swept and ~100,400 in the pool —
+about 77 MB — with a 17 MB staging peak. Roughly 388 MB in total, comfortably inside
+the tier.**
+
+⚠️ **The weighted extrapolation was 2.9× too high**, and this is the first *measured*
+figure to check it against. `sample_weight` put bucket 0 at 118,031 items; the sweep
+found 41,212. Two reasons, both structural rather than a bug: 1,104 of 1,550 brands
+turned out to have fewer than 8 live items in the target sizes and were skipped, and
+per-brand weights are noisy where we hold few items at high weight. Treat design-weight
+projections as an upper bound from here.
 
 ### Three constraints worth writing down
 
@@ -649,6 +668,22 @@ the sweep is bucketed by brand. Rare luxury needs a different mechanism.
 Thursday. `swept_on` carries that so the interface can show it rather than hide it.
 Prices and `still_listed` can be refreshed daily across the whole pool for ~1,300
 Algolia requests; the peer median cannot, and is as old as its bucket.
+
+⚠️ **The ten largest brands are swept incompletely, and the bias runs the wrong way.**
+A single Algolia query shape stops paginating at about 2,000 results, so a brand is
+capped at ~6,000 items across the three size shapes. Ten brands market-wide exceed that
+— Zara 21,390, & Other Stories 9,998, COS 9,219, H&M 9,162, Levi Strauss 8,889, Adidas,
+Nike, Arket, Hugo Boss, Polo Ralph Lauren — with 54 more between 2,000 and 6,000 and so
+at risk per shape.
+
+For those brands the peer group is **not** complete, which is the premise the whole
+rotation rests on. Worse, the truncation is not random: `enrol.py` measured that Algolia's
+relevance order favours expensive items, so a capped brand's sample skews expensive, its
+median comes out too high, and its items look cheaper than they are. That is the same
+direction of error as a thin peer group — it manufactures false bargains.
+
+The fix is the one `enrol.py` already uses: fan a large brand out by price band so each
+shape stays under the cap. Until then, treat discounts on those ten brands with suspicion.
 
 ⚠️ **`sweep_staging` must never be copied into `items`.** It is deliberately biased — a
 quarter of the brands, and only sizes that fit two specific people. `items` is the
