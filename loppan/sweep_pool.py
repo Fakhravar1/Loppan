@@ -129,8 +129,12 @@ def sweep(bucket: int, dry: bool) -> int:
         db.upsert("sweep_staging", rows, "item_id")
         staged += len(rows)
         seen_brands += 1
+        # flush=True because this runs for ~20 minutes and Python buffers stdout when
+        # it is not a terminal — under nohup, a CI log or a background shell the
+        # progress would otherwise appear only when the job finished, which is exactly
+        # when nobody needs it.
         if i % 250 == 0:
-            print(f"  {i:,}/{len(brands):,} brands · {staged:,} staged")
+            print(f"  {i:,}/{len(brands):,} brands · {staged:,} staged", flush=True)
 
     print(f"  staged {staged:,} items from {seen_brands:,} brands with enough depth")
     return staged
