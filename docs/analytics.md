@@ -691,3 +691,27 @@ stratified sample with known inclusion probabilities that `brand_daily`,
 `predictor_daily` and every sell rate depend on. Pooling them would quietly turn every
 market estimate into "…among things that happen to fit us". §8 makes the same point
 about the candidate pool; this is the same rule one level further out.
+
+### `sizes` is what an item FITS; `metadata.size` is what it is LABELLED
+
+This distinction caused two false alarms in one afternoon and is worth stating plainly.
+
+The sweep filters on Algolia's **`sizes` array**, which lists every size an item actually
+fits. What we store in `shortlist_daily.size` is **`metadata.size`**, the single display
+label. They frequently differ:
+
+| Stored label | `sizes` array | Why it matched |
+|---|---|---|
+| `MEN-INT-L/XL` | `['MEN-INT-L', 'MEN-INT-XL']` | straddle labels are expanded into their halves |
+| `MEN-EU_REGULAR-42R` | `['MEN-EU_REGULAR-42R', 'MEN-EU-52']` | a 42R suit **is** an EU 52; both are carried |
+
+So a row whose stored size is not in `target_sizes` can be perfectly on-profile. Verified
+on bucket 1: of 11,877 rows, 11,320 carry an exact target code, 556 are straddle labels
+covering one, and the single remaining outlier was the 42R suit above — **zero genuine
+leaks**.
+
+⚠️ Two consequences. Any audit of "is the pool within profile?" must check the array
+semantics, not the stored label, or it will report a 5–8% leak that does not exist. And
+the straddle rows in `target_sizes` are **redundant** — enabling them adds nothing,
+because the plain codes already match those items. They are kept, disabled and
+annotated, so nobody re-adds them expecting more stock.

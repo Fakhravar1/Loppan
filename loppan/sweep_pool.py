@@ -168,9 +168,19 @@ def sweep(bucket: int, dry: bool) -> int:
     staged = seen_brands = 0
 
     for i, brand in enumerate(brands, 1):
-        hits: list[dict] = []
+        # Keyed by objectID, not a list, because the same item comes back more than
+        # once. `api-notes.md` records that walking a live index returns some rows
+        # twice and skips others, and the price fan-out multiplies the number of
+        # paginated requests, so it happens far more often than it used to.
+        #
+        # PostgREST does not tolerate it: two rows with the same id in one upsert give
+        # "ON CONFLICT DO UPDATE command cannot affect row a second time" and the whole
+        # batch fails. That is how this was found.
+        found: dict[str, dict] = {}
         for _demo, ff in shapes:
-            hits.extend(_fetch_shape(ff, brand, MIN_PRICE_KR, None))
+            for h in _fetch_shape(ff, brand, MIN_PRICE_KR, None):
+                found[h["objectID"]] = h
+        hits = list(found.values())
 
         # A brand too thin to form a group of 8 cannot produce a peer comparison at any
         # level we use, so staging it would only cost a round trip.
