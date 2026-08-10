@@ -195,6 +195,61 @@ sorts on every one of them and a computed column in a view cannot be indexed. Wr
 sources use. `brand_attention_index` is the exception and stays a ratio, because 1.00 =
 "exactly the attention its mix deserves" is the entire meaning of that number.
 
+**`size_group` · `size_system` · `size_value`** are **generated columns**, split from
+`size` so the grid can filter on it. Sellpy codes every size as `GROUP-SYSTEM-VALUE`:
+
+| | Examples | Notes |
+|---|---|---|
+| `size_group` | `WMN` `MEN` `CHILD` `SHOES` `SOCKS` `PANTS` `RINGS` `BELTS` `GLOVES` `HATS` | plus `ONE SIZE` and `NO SIZE`, which carry no hyphen and land here whole with a null system and value |
+| `size_system` | `EU` `INT` `CM` `INCH` `MM` | and the tailoring cuts `EU_BRA` `EU_COLLAR` `EU_LONG` `EU_REGULAR` `EU_SHORT` `EU_WIDE` |
+| `size_value` | `38` `M` `56/58` `80I` `16.5` | |
+
+`split_part` is exact rather than best-effort here: **all 733 codes in `lookup` carry
+exactly two hyphens**, systems use underscores and values use slashes and dots, so no
+separator is ambiguous. Verified 2026-08-10.
+
+Generated rather than written by `refresh_shortlist()` so the parse lives in one place
+and cannot drift from the function the first time someone edits one and not the other.
+
+⚠️ **`size_value` is meaningless on its own.** `SHOES-EU-38` and `WMN-EU-38` share a
+digit and are unrelated things. Any filter or group-by on the value alone is a bug;
+it only means something alongside its group and system.
+
+### `size_area` — the axis Sellpy's coding lacks
+
+**`size_group` mixes two unrelated things.** `WMN` / `MEN` / `CHILD` say *who* a garment
+is cut for; `SHOES` / `PANTS` / `RINGS` / `BELTS` / `GLOVES` / `HATS` say *what part of
+the body it fits*. So `WMN-EU-38` might be a dress, a skirt or trousers — three
+different measurements of the same person — and no query over group alone can answer
+"would this fit me".
+
+`size_area` supplies the missing axis, generated from the size code plus the category
+path:
+
+| Area | Comes from |
+|---|---|
+| `feet` | `SHOES`, `SOCKS` |
+| `lower body` | `PANTS`, or Byxor / Jeans / Shorts / Kjolar |
+| `upper body` | Tröjor / T-shirts / Skjortor / Blusar / Toppar / Jackor / Kavajer |
+| `full body` | Klänningar / Byxdressar / Badkläder / Sovplagg / Mammakläder |
+| `underwear` · `sportswear` | their own categories |
+| `bust` · `neck` | the `EU_BRA` and `EU_COLLAR` systems — the scale settles it whatever aisle the item sits in |
+| `waist` · `head` · `hands` · `fingers` | `BELTS`, `HATS`, `GLOVES`, `RINGS` |
+| `child` | `CHILD` (height in cm) |
+| `unsized` · `other` | `ONE SIZE` / `NO SIZE`, and anything unmatched |
+
+Distribution on the 2,000-row shortlist, 2026-08-10: upper body 842, full body 531,
+feet 353, lower body 171, child 77, everything else 25.
+
+This is the level a **personal size profile** is expressed in — feet one size, legs
+another, torso a third — and the dashboard's "my sizes" panel is built on it. The
+profile lives in the browser's localStorage, never in the database: the app is
+read-only and that has not changed.
+
+Not generated from `size_group`/`size_system`, because Postgres forbids a generated
+column referencing another generated column. The code is re-split inside the
+expression; that duplication is deliberate and confined to one place.
+
 ---
 
 ## Deliberately not collected

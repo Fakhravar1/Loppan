@@ -1,0 +1,8 @@
+#!/bin/bash
+# Tear the namespace down. Deleting the namespace destroys the interfaces inside it,
+# so this is enough; the explicit link delete only catches the case where the
+# interface was created but never moved.
+set -uo pipefail
+ip netns del loppan 2>/dev/null || true
+ip link del wg-loppan 2>/dev/null || true
+echo "[loppan-netns] namespace down"

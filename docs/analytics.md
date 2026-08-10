@@ -415,9 +415,164 @@ Absence from Algolia is recorded rather than discarded: sold items are deleted f
 index within the day, so `still_listed = false` is a free liveness check on the picks.
 First run, 2026-08-10: **18 of 500 had already gone** in the hours since the pass.
 
-### Retention
+### The pool is now complete, and paged server-side (2026-08-10)
 
-30 days, not one. Keeping the window is what will later answer *did the items we flagged
-actually sell?* — the shortlist becomes its own small observational study at no extra
-collection cost. Keeping it forever would put it on `brand_daily`'s growth curve, and
-storage is already the binding constraint (§6).
+`shortlist_daily` holds **every eligible item — 38,926 — not a top-N sample.** The old
+`p_n` cap was a workaround for the browser, and it leaked into the answers: filtering to
+men's INT L returned 29 of a real 680, and shoes in EU 42 returned 5 of 202.
+
+| | Before | Now |
+|---|---|---|
+| Rows stored | 2,000 | **38,926** |
+| Where filtering happens | browser | Postgres |
+| Rows per page | all of them | **60** |
+| Men's INT L | 29 | **680** |
+| Shoes EU 42 | 5 | **202** |
+
+Measured: the table is **65 MB**, a filtered-and-sorted page runs in **8.9 ms**, and over
+HTTP a page lands in **65–90 ms** including the exact count.
+
+Three pieces make it work:
+
+- **`shortlist_facets()`** returns every distinct filter value as one `json` scalar
+  (~52 KB: 1,163 brands, 306 item types, 497 size combinations). The grid holds 60 rows,
+  so it can no longer build its own dropdowns. A `json` scalar rather than a set,
+  because PostgREST truncates set-returning functions at 1,000 rows without erroring — §7.
+- **`size_key`** — `area|system|value` in one column, so a saved size profile is a single
+  `IN` list rather than an OR-chain over three columns.
+- **Indexes** on `(as_of, …)` for every offered ordering, plus the size tuple.
+
+⚠️ **The eligible set must never be re-derived per request.** Deriving it from `items` +
+`peer_prices` is a 693k-row scan measured at 3.0 s — over the anon statement timeout. It
+is materialised once per pass and only read afterwards.
+
+The grid pages with `useShortlistInfinite`: 60 rows a request, the exact count on page 1
+only, and an IntersectionObserver 600 px above the end so the next page arrives before
+the reader does. Any filter, sort or profile change resets to page 1 — appending page 2
+of a different question under page 1 of this one would silently blend two result sets.
+
+### Why the pool is stored rather than swept live at browse time
+
+A tempting alternative is to hold nothing and query Sellpy when someone browses. It does
+not work, for two independent reasons.
+
+**Ranking needs the group, not the item.** "Undervalued" means cheap against the median
+of its peer group, so every item on screen needs its group's median. Live, that is one
+Algolia request per distinct group — roughly 60 for a 60-item page, one to three seconds
+per scroll, every scroll, billed to Sellpy per operation. From the table it is 65–90 ms.
+
+**It would not save what it appears to save.** Projected at full coverage, the pool is
+~280 MB of a ~1.3 GB total — `items` (~664 MB) and `peer_prices` (~302 MB) are the bulk,
+and neither can go, because the peer comparison and the whole statistical layer are built
+on them. Removing the pool leaves ~970 MB, still twice the free tier.
+
+**The lever that does work, if storage binds:** keep the pool but make the row narrow.
+Store only what can be sorted or filtered on — the scalars, ids and booleans, ~200 B
+instead of ~1,750 — and join `items`/`brands`/`lookup` for the 60 rows being displayed.
+That is ~32 MB rather than ~280 MB at full coverage, and server-side paging already makes
+it straightforward, because the join only ever runs on a page's worth of rows.
+
+### Retention: one day of the pool, ninety of what it recommended
+
+The full pool is ~68 MB *per day*, so only the current day is kept. The longitudinal
+question — *did the items we flagged actually sell?* — is preserved separately in
+**`shortlist_flagged`**: the top 500, per-brand capped, at ~60 B a row, kept 90 days for
+under 3 MB. Fat table for browsing, skinny table for history.
+
+### Gates removed 2026-08-10, by decision rather than measurement
+
+`is_reserved`, `favourites >= 1` and `price < peer_median` were dropped. Net effect on
+the pool is small — **36,723 → 38,926** — because `peer_pct <= 0.25` dominates
+everything downstream of it.
+
+Worth knowing what was given up: items with zero favourites sell at **0.17%/day against
+3.77% at 21+**, so ~45k items now in the pool are things nobody has shown any interest
+in. That is deliberate — the grid's own `favourites` sort and filter do the work instead
+of a hard gate — but if the pool starts feeling like landfill, `p_min_favourites` is
+still there and setting it to 1 restores the old behaviour.
+
+### ⚠️ "2,335,917" is not the market — correction, 2026-08-10
+
+That figure is `sum(population)` over `brand_band_population`, and it was quoted as the
+size of the market repeatedly before anyone checked. It is not. `brand_band_population`
+is built from `algolia.brand_facets()`, which the API caps at **1,000 brands** — its own
+docstring says that covers "~59% of items". So 2.34M is the frame for the largest
+thousand brands, not the catalogue.
+
+It was caught by an impossible comparison: Algolia reports ~5.1M wearables at **200 kr
+and above**, which cannot be smaller than the same market at 100 kr and above.
+
+**Use the design weights instead.** `sample_weight` exists precisely to estimate the
+population from the sample, and it gives a coherent answer:
+
+| | Weighted estimate |
+|---|---|
+| Live wearables | **5,925,145** |
+| …at 200 kr and above | **3,293,860** |
+
+Treat both as estimates with real error bars — Algolia's own large filtered counts come
+back `exhaustiveNbHits: false` and disagree by tens of percent — but they are
+design-based rather than an artefact of a truncated facet list.
+
+Every projection made against 2.34M before this date is understated. The corrected ones
+are below.
+
+### What a full crawl would cost
+
+The waterfall from the market to the pool, measured 2026-08-10:
+
+| Gate | Survivors |
+|---|---|
+| Algolia frame — wearables 100 kr+ | 2,335,917 |
+| **we actually hold** | **671,247** (28.7%) |
+| stratum A/B/N | 659,889 |
+| price ≥ 200 kr | 436,656 (66.2%) |
+| has a peer group at level 1–2 with ≥ 12 members | 334,692 (76.7%) |
+| **in the cheapest quarter of its group** | **38,926** (11.6%) |
+
+Two cuts do nearly all the work: **coverage**, and the cheapest-quarter rule — which is
+not a filter so much as the definition of the thing.
+
+Projecting to full coverage, the last ratio is scale-invariant (a quarter of each group
+is a quarter however big the group gets) while the peer-group ratio *rises*, because
+thin groups thicken and clear the 12-member floor. At 88–93% clearing:
+
+> **~150,000–170,000 items in the pool, central estimate ~160,000.** About 4× today.
+
+⚠️ **That does not fit the free tier, and neither does the crawl behind it.** Projected:
+`items` ~664 MB (from 185), `peer_prices` ~302 MB (from 81), `shortlist_daily` ~280 MB
+(from 65) — **roughly 1.3 GB against a 500 MB limit.** The full crawl is a paid-tier
+decision before it is an engineering one; Supabase Pro's 8 GB covers it with room.
+
+### ⚠️ Sorting is not selection — resolved, kept for the reasoning
+
+The grid sorts on 21 columns, client-side, over every row it holds. But those rows are
+**chosen** by `p_n` — top N by `discount_pct` — so sorting reorders that set and cannot
+reach past it. Filtering makes this visible immediately, and it is the first thing a
+real user hit.
+
+**Measured 2026-08-10.** Filtering the grid to men's INT L returned **8 items**. The
+same filter against everything that passes the gate returns **680**, and against every
+live item we hold, **16,325**. The shortage was never coverage — it was `p_n`.
+
+`p_n` moved 500 → **2,000**, and `p_keep_days` 30 → **14** to pay for it: at ~1,851 B a
+row the full 36,943-row eligible pool is ~68 MB *per day*, while 2,000 × 14 days is
+~52 MB against the 281 MB already in use. Men's INT L went 8 → 29.
+
+**It is still a sample, and still selected by the most error-prone criterion we have.**
+Discount ranking pulls toward the extreme tail, where a big number is more often a
+mismatched peer group than a bargain. An item 45% below a well-evidenced 200-listing
+group is a better buy signal than 90% below a 12-listing group, and it still may not
+appear.
+
+Two ways further, neither taken:
+
+| | Effect | Cost |
+|---|---|---|
+| Store the whole eligible pool | Filtering becomes exact rather than a sample | ~68 MB/day; forces server-side sort and filter, since a browser cannot hold 37k rows |
+| Rank on `peer_pct` instead of discount | Less mismatch-prone | Loses "how cheap" as the organising idea |
+
+The first is the real answer once storage allows it. It also stops being a browser
+problem and becomes an indexed-query problem, which is the easier of the two —
+`shortlist_daily` is indexed on `(as_of, size_area)` and `(as_of, size_group,
+size_system, size_value)` for exactly that future.

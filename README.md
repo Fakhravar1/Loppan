@@ -20,6 +20,7 @@ been measured.
 | `docs/handover.md` | The full design document: ideas, evidence, economics, open questions |
 | `docs/analytics.md` | What is derived after each pass — the predictor board, brand attention index, peer prices — and the three ways this data misleads |
 | `docs/api-notes.md` | **Read before writing a query.** Which Parse queries work, which time out, and why |
+| `docs/pi-vpn.md` | How the crawl leaves the house through a tunnel, scoped so it cannot affect the Qvitta project |
 | `loppan/sellpy.py` | Read-only client for Sellpy's public Parse backend |
 | `loppan/shortlist.py` | Builds the undervalued shortlist the dashboard grid reads, and fetches its pictures |
 

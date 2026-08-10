@@ -1,0 +1,71 @@
+#!/bin/bash
+# Put the NordLynx private key into /etc/wireguard/loppan.conf.
+#
+# The key is never printed, never logged, and never leaves the Pi. NordVPN does not
+# publish WireGuard keys through any web page or API -- the only way to obtain one is
+# to let their client negotiate it once, which is why the client is installed at all.
+# It is removed again at the end unless --keep-client is passed.
+#
+# Run `nordvpn login` yourself before this. That step needs your account and is
+# deliberately not automated here.
+set -euo pipefail
+
+CONF=/etc/wireguard/loppan.conf
+KEEP=0
+[[ "${1:-}" == "--keep-client" ]] && KEEP=1
+
+if ! command -v nordvpn >/dev/null 2>&1; then
+  echo "The nordvpn client is not installed. Run:  sudo snap install nordvpn" >&2
+  exit 1
+fi
+
+if ! nordvpn account >/dev/null 2>&1; then
+  echo "Not logged in. Run:  nordvpn login" >&2
+  echo "It prints a URL -- open it in a browser, sign in, and then re-run this." >&2
+  exit 1
+fi
+
+echo "Connecting once so NordVPN issues a WireGuard key..."
+nordvpn set technology nordlynx >/dev/null
+nordvpn connect Sweden >/dev/null
+
+for _ in $(seq 1 30); do
+  ip link show nordlynx >/dev/null 2>&1 && break
+  sleep 1
+done
+if ! ip link show nordlynx >/dev/null 2>&1; then
+  echo "The nordlynx interface never appeared -- connection failed." >&2
+  exit 1
+fi
+
+# Written straight to the file. Nothing goes to stdout, so the key cannot end up in a
+# terminal scrollback, a systemd journal, or an agent transcript.
+install -d -m 700 /etc/wireguard
+umask 077
+{
+  echo "# NordLynx private key for the Loppan namespace."
+  echo "# Peer, endpoint and routes are added at start time by loppan-netns-up."
+  echo "[Interface]"
+  printf 'PrivateKey = %s\n' "$(wg show nordlynx private-key)"
+} > "$CONF"
+chmod 600 "$CONF"
+
+nordvpn disconnect >/dev/null 2>&1 || true
+
+# ⚠️ Deliberately NO `nordvpn logout` here, ever.
+#
+# `nordvpn login --help` states that tokens are revoked at logout, and the NordLynx
+# key we just extracted is issued against that session. Logging out would hand back a
+# key that stops working, and the failure would not show up until a later pass died
+# with no handshake -- long after anyone would connect the two events.
+#
+# Removing the snap is a local operation that does not call their API, so it should
+# leave the registration intact. "Should" is doing work in that sentence, which is why
+# `install --bind-runner` is gated behind `verify` running AFTER removal.
+if [[ $KEEP -eq 0 ]]; then
+  echo "Removing the NordVPN client (without logging out -- that would revoke the key)."
+  snap remove nordvpn >/dev/null 2>&1 || true
+fi
+
+echo "Key written to $CONF (mode 600). It was not displayed."
+echo "Next:  sudo systemctl start loppan-netns && sudo deploy/pi-vpn/verify"

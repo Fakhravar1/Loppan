@@ -44,36 +44,45 @@ def _arg(flag: str, default: str | None = None) -> str | None:
 
 
 def attach_images(as_of: str) -> tuple[int, int]:
-    """Fill image_paths for the day's rows. Returns (with_images, gone)."""
+    """Fill image_paths for the day's rows. Returns (with_images, gone).
+
+    Parallel because the pool is now the whole eligible set rather than a top-N
+    sample: ~37,000 items is ~370 requests, which is a couple of minutes serially and
+    seconds across the pool `algolia.py` already runs. Results are written in chunks
+    as they land rather than accumulated, so peak memory stays proportional to a
+    chunk — the same discipline `track.py` had to learn when it grew to 7.3 GB.
+    """
     rows = db.query(f"shortlist_daily?select=item_id,rank&as_of=eq.{as_of}")
     if not rows:
         return 0, 0
 
-    ids = [r["item_id"] for r in rows]
     ranks = {r["item_id"]: r["rank"] for r in rows}
-    docs = algolia.get_objects(ids)
-
+    ids = list(ranks)
     today = dt.date.today().isoformat()
-    payload, gone = [], 0
+    with_images = gone = 0
 
-    for item_id, doc in zip(ids, docs):
-        paths = search.image_paths(doc.get("images")) if doc else []
-        if doc is None:
-            gone += 1
-        # Every row carries an identical key set. PostgREST unions the keys across a
-        # batch and fills the gaps with null, so a row that omitted `rank` here would
-        # null out a NOT NULL column for the whole upsert.
-        payload.append({
-            "as_of": as_of,
-            "item_id": item_id,
-            "rank": ranks[item_id],
-            "image_paths": paths or None,
-            "image_checked_on": today,
-            "still_listed": doc is not None,
-        })
+    for chunk_ids, docs in algolia.get_objects_parallel(ids):
+        payload = []
+        for item_id, doc in zip(chunk_ids, docs):
+            paths = search.image_paths(doc.get("images")) if doc else []
+            if doc is None:
+                gone += 1
+            if paths:
+                with_images += 1
+            # Every row carries an identical key set. PostgREST unions the keys across
+            # a batch and fills the gaps with null, so a row that omitted `rank` here
+            # would null out a NOT NULL column for the whole upsert.
+            payload.append({
+                "as_of": as_of,
+                "item_id": item_id,
+                "rank": ranks[item_id],
+                "image_paths": paths or None,
+                "image_checked_on": today,
+                "still_listed": doc is not None,
+            })
+        db.upsert("shortlist_daily", payload, on_conflict="as_of,item_id")
 
-    db.upsert("shortlist_daily", payload, on_conflict="as_of,item_id")
-    return sum(1 for r in payload if r["image_paths"]), gone
+    return with_images, gone
 
 
 def main() -> None:
@@ -81,14 +90,13 @@ def main() -> None:
         sys.exit("LOPPAN_SUPABASE_KEY is not set")
 
     as_of = _arg("--as-of") or dt.date.today().isoformat()
-    params: dict[str, object] = {"p_as_of": as_of}
-    if _arg("--n"):
-        params["p_n"] = int(_arg("--n"))
-
     print(f"shortlist for {as_of}")
 
-    written = db.rpc("refresh_shortlist", params)
-    print(f"  refresh_shortlist: {written:,} items shortlisted")
+    # No row cap any more: the function writes every eligible item and records the top
+    # slice separately in `shortlist_flagged`. A cap here would put the dashboard back
+    # to filtering a sample of a sample.
+    written = db.rpc("refresh_shortlist", {"p_as_of": as_of})
+    print(f"  refresh_shortlist: {written:,} items in the pool")
     if not written:
         sys.exit("  nothing shortlisted — has analytics.py run? peer_prices may be empty")
 

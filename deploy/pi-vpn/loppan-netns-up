@@ -1,0 +1,104 @@
+#!/bin/bash
+# Bring up the `loppan` network namespace with a WireGuard tunnel as its ONLY route.
+#
+# Why a namespace rather than a system-wide VPN: qvitta-pi is shared production
+# hardware. It runs the Qvitta project's dbt build every 15 minutes on a second
+# Actions runner. A system-wide tunnel with a kill switch would take that down on
+# every reconnect. Everything here is confined to one namespace; nothing outside it
+# sees any change.
+#
+# Why this is a kill switch without a firewall rule: the namespace contains exactly
+# two interfaces -- loopback, and the tunnel. There is no other path out. If the
+# tunnel is down, traffic does not leak to the home IP, it simply fails. That is a
+# structural guarantee rather than a rule someone can forget to load.
+#
+# The WireGuard interface is created in the HOST namespace and then moved. That is
+# deliberate: a wg interface keeps its UDP socket in the namespace it was created
+# in, so the encrypted packets still egress over the Pi's ordinary LAN route while
+# the plaintext side lives inside the namespace. Create it inside and it has no way
+# to reach the internet to build the tunnel in the first place.
+set -euo pipefail
+
+NS=loppan
+IFACE=wg-loppan
+CONF=/etc/wireguard/loppan.conf
+ADDR=10.5.0.2/32
+
+# NordVPN's DNS. Used inside the namespace only, via /etc/netns/loppan/resolv.conf,
+# so name lookups go down the tunnel rather than to the router and out of the house.
+DNS1=103.86.96.100
+DNS2=103.86.99.100
+
+# Pinned Swedish endpoint, used when the recommendation API cannot be reached.
+# Sweden on purpose: a Swedish site read from a Swedish address is unremarkable,
+# which is the point. Refresh with: deploy/pi-vpn/refresh-endpoint
+FALLBACK_ENDPOINT="45.83.91.203:51820"
+FALLBACK_PUBKEY="EdKGlWFPgosHt/9vGBfcIv39umAsMrvbOxw9c3CZMw4="
+
+log() { echo "[loppan-netns] $*"; }
+
+if [[ ! -s "$CONF" ]] || grep -q "PASTE_PRIVATE_KEY_HERE" "$CONF"; then
+  echo "[loppan-netns] $CONF has no private key yet." >&2
+  echo "[loppan-netns] Run deploy/pi-vpn/set-key first -- see docs/pi-vpn.md." >&2
+  exit 1
+fi
+
+# Ask NordVPN which Swedish WireGuard server to use right now. Public endpoint, no
+# account needed. Short timeout, because a slow API must not delay boot -- and the
+# pinned fallback is a perfectly good server, just possibly a busier one.
+ENDPOINT=""
+PUBKEY=""
+if API=$(curl -fsS --max-time 8 \
+  'https://api.nordvpn.com/v1/servers/recommendations?filters%5Bservers_technologies%5D%5Bidentifier%5D=wireguard_udp&filters%5Bcountry_id%5D=208&limit=1' \
+  2>/dev/null); then
+  ENDPOINT=$(printf '%s' "$API" | python3 -c \
+    'import json,sys; d=json.load(sys.stdin); print(d[0]["station"]+":51820") if d else ""' 2>/dev/null || true)
+  PUBKEY=$(printf '%s' "$API" | python3 -c \
+    'import json,sys
+d=json.load(sys.stdin)
+print(next((m["value"] for t in d[0]["technologies"] if t["identifier"]=="wireguard_udp"
+            for m in (t.get("metadata") or []) if m["name"]=="public_key"), "")) if d else ""' 2>/dev/null || true)
+fi
+if [[ -z "$ENDPOINT" || -z "$PUBKEY" ]]; then
+  log "recommendation API unavailable, using pinned endpoint"
+  ENDPOINT="$FALLBACK_ENDPOINT"
+  PUBKEY="$FALLBACK_PUBKEY"
+fi
+log "endpoint $ENDPOINT"
+
+# Idempotent: tear down any half-built state from a previous failed start.
+ip netns del "$NS" 2>/dev/null || true
+ip link del "$IFACE" 2>/dev/null || true
+
+ip netns add "$NS"
+ip link add "$IFACE" type wireguard
+ip link set "$IFACE" netns "$NS"
+
+# `wg setconf` takes only Interface/Peer cryptographic settings -- addresses and
+# routes are wg-quick's job, and wg-quick is not namespace-aware, so we do them by
+# hand below. The config file therefore holds the private key and nothing else.
+RUNTIME=$(mktemp)
+chmod 600 "$RUNTIME"
+trap 'rm -f "$RUNTIME"' EXIT
+{
+  cat "$CONF"
+  echo
+  echo "[Peer]"
+  echo "PublicKey = $PUBKEY"
+  echo "AllowedIPs = 0.0.0.0/0, ::/0"
+  echo "Endpoint = $ENDPOINT"
+  # NordLynx drops idle peers. The crawl runs for ~27 minutes with gaps, so keep the
+  # session warm rather than rediscovering it mid-pass.
+  echo "PersistentKeepalive = 25"
+} > "$RUNTIME"
+
+ip netns exec "$NS" wg setconf "$IFACE" "$RUNTIME"
+ip -n "$NS" address add "$ADDR" dev "$IFACE"
+ip -n "$NS" link set "$IFACE" up
+ip -n "$NS" link set lo up
+ip -n "$NS" route add default dev "$IFACE"
+
+install -d -m 755 /etc/netns/"$NS"
+printf 'nameserver %s\nnameserver %s\n' "$DNS1" "$DNS2" > /etc/netns/"$NS"/resolv.conf
+
+log "namespace up"

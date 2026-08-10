@@ -1,0 +1,20 @@
+[Unit]
+Description=Loppan-only WireGuard network namespace
+Documentation=https://github.com/Fakhravar1/Loppan/blob/main/docs/pi-vpn.md
+After=network-online.target
+Wants=network-online.target
+# The Loppan runner binds to the namespace this unit creates, so it must not start
+# before the namespace exists. The dependency is declared on the runner's side too.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/loppan-netns-up
+ExecStop=/usr/local/sbin/loppan-netns-down
+# A failed start must leave nothing half-built -- otherwise the namespace could exist
+# with no route and the runner would bind to a dead network rather than failing loudly.
+ExecStopPost=/usr/local/sbin/loppan-netns-down
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

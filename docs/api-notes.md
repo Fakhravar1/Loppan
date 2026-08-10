@@ -716,7 +716,24 @@ and `item_scores`, and with it `score`, `expected_profit`, `cap_binds` and
 cheap against *live peers*, not against Sellpy's value estimate. There is no profit
 column, because `price_to_estimate` is null on every live item since the rehaul.
 
-`v_shortlist` is ~500 rows and every column is stored, so **fetch it whole and sort
+`v_shortlist` is ~2,000 rows and every column is stored, so **fetch it whole and sort
 client-side** rather than issuing a query per sort. `thumbnail` and `images` are
 ready-built CDN URLs on `prod.images.sellpy.net`. Sellpy honours no resize
 parameters, so scale client-side.
+
+⚠️ **PostgREST caps every request at 1,000 rows, and `limit` does not override it.**
+Measured 2026-08-10 against `items`: `?limit=5000` returns exactly 1,000 rows with
+`Content-Range: 0-999/*` and no error of any kind.
+
+`analytics.md` §7 records this for set-returning **functions**; it applies identically
+to ordinary table and view reads, which is the more common way to meet it. The
+dashboard asked for `.limit(2000)` and would have shown the first thousand rows as
+though they were all of them — a wrong answer that looks exactly like a right one, and
+invisible for as long as the table happened to hold fewer than 1,000 rows.
+
+Anything expecting more than 1,000 rows must page:
+
+- server-side, `db.query` already walks Range headers — use it rather than rolling one
+- in a browser, loop `.range(0,999)`, `.range(1000,1999)` … and stop when a page comes
+  back short. Bound the loop; a runaway pager against a growing table is worse than a
+  truncated read.

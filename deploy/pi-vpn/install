@@ -1,0 +1,45 @@
+#!/bin/bash
+# Install the namespace plumbing on qvitta-pi. Idempotent; safe to re-run.
+#
+# Deliberately does NOT bind the Actions runner to the namespace. That is the one
+# irreversible-feeling step -- it stops the Loppan runner until the tunnel works -- so
+# it lives behind `--bind-runner` and should only be run after `verify` passes.
+set -euo pipefail
+
+RUNNER=actions.runner.Fakhravar1-Loppan.qvitta-pi.service
+HERE=$(cd "$(dirname "$0")" && pwd)
+BIND=0
+[[ "${1:-}" == "--bind-runner" ]] && BIND=1
+
+if [[ $EUID -ne 0 ]]; then echo "run with sudo" >&2; exit 1; fi
+
+command -v wg >/dev/null || { echo "installing wireguard-tools"; apt-get install -y -q wireguard-tools; }
+
+install -m 755 "$HERE/loppan-netns-up"   /usr/local/sbin/loppan-netns-up
+install -m 755 "$HERE/loppan-netns-down" /usr/local/sbin/loppan-netns-down
+install -m 644 "$HERE/loppan-netns.service" /etc/systemd/system/loppan-netns.service
+
+# Placeholder so loppan-netns-up fails with a useful message rather than a stack trace
+# when the key has not been fetched yet.
+if [[ ! -f /etc/wireguard/loppan.conf ]]; then
+  install -d -m 700 /etc/wireguard
+  printf '[Interface]\nPrivateKey = PASTE_PRIVATE_KEY_HERE\n' > /etc/wireguard/loppan.conf
+  chmod 600 /etc/wireguard/loppan.conf
+  echo "created /etc/wireguard/loppan.conf placeholder -- run set-key to fill it"
+fi
+
+systemctl daemon-reload
+systemctl enable loppan-netns.service >/dev/null
+echo "installed: loppan-netns.service (enabled, not started)"
+
+if [[ $BIND -eq 1 ]]; then
+  install -d -m 755 "/etc/systemd/system/${RUNNER}.d"
+  install -m 644 "$HERE/runner-netns.conf" "/etc/systemd/system/${RUNNER}.d/netns.conf"
+  systemctl daemon-reload
+  systemctl restart "$RUNNER"
+  echo "bound $RUNNER to the loppan namespace"
+  echo "Qvitta's runner was not touched:"
+  systemctl is-active actions.runner.Fakhravar1-claim-my-train.qvitta-pi.service
+else
+  echo "runner NOT bound yet -- run 'verify' first, then re-run with --bind-runner"
+fi

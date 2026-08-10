@@ -1,0 +1,55 @@
+#!/bin/bash
+# Prove the thing actually does what it claims, rather than assuming it does.
+#
+# Four questions, and all four have to answer correctly before the runner is bound to
+# the namespace:
+#   1. does the host still have its ordinary connection (i.e. did we break Qvitta)?
+#   2. does the namespace reach the internet at all?
+#   3. is the namespace's public IP DIFFERENT from the host's?
+#   4. does the namespace fail closed when the tunnel is removed?
+set -uo pipefail
+
+NS=loppan
+IPSVC="https://api.ipify.org"
+fail=0
+
+echo "== 1. host connectivity (Qvitta's runner shares this) =="
+HOST_IP=$(curl -fsS --max-time 15 "$IPSVC" || echo "")
+if [[ -n "$HOST_IP" ]]; then echo "   host public IP : $HOST_IP"
+else echo "   FAIL: host cannot reach the internet"; fail=1; fi
+
+echo "== 2 & 3. namespace connectivity and egress IP =="
+if ! ip netns list | grep -q "^${NS}"; then
+  echo "   FAIL: namespace $NS does not exist"; fail=1
+else
+  NS_IP=$(ip netns exec "$NS" curl -fsS --max-time 20 "$IPSVC" || echo "")
+  if [[ -z "$NS_IP" ]]; then
+    echo "   FAIL: namespace cannot reach the internet"; fail=1
+  else
+    echo "   namespace IP   : $NS_IP"
+    if [[ "$NS_IP" == "$HOST_IP" ]]; then
+      echo "   FAIL: namespace is using the HOME IP -- the tunnel is not carrying traffic"; fail=1
+    else
+      echo "   OK: namespace egresses somewhere other than home"
+    fi
+  fi
+  echo "   handshake      : $(ip netns exec "$NS" wg show wg-loppan latest-handshakes 2>/dev/null | awk '{print $2}')"
+fi
+
+echo "== 4. fail-closed check =="
+# Drop the default route and confirm nothing escapes. If this leaks, the namespace is
+# not the kill switch it is supposed to be and the whole design is void.
+if ip netns list | grep -q "^${NS}"; then
+  ip -n "$NS" route del default dev wg-loppan 2>/dev/null || true
+  LEAK=$(ip netns exec "$NS" curl -fsS --max-time 8 "$IPSVC" || echo "")
+  if [[ -n "$LEAK" ]]; then
+    echo "   FAIL: still reachable at $LEAK with no tunnel route -- IT LEAKS"; fail=1
+  else
+    echo "   OK: no route, no traffic"
+  fi
+  ip -n "$NS" route add default dev wg-loppan 2>/dev/null || true
+fi
+
+echo
+if [[ $fail -eq 0 ]]; then echo "ALL CHECKS PASSED"; else echo "SOMETHING FAILED -- do not bind the runner yet"; fi
+exit $fail
