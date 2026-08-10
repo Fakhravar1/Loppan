@@ -21,6 +21,7 @@ been measured.
 | `docs/analytics.md` | What is derived after each pass — the predictor board, brand attention index, peer prices — and the three ways this data misleads |
 | `docs/api-notes.md` | **Read before writing a query.** Which Parse queries work, which time out, and why |
 | `loppan/sellpy.py` | Read-only client for Sellpy's public Parse backend |
+| `loppan/shortlist.py` | Builds the undervalued shortlist the dashboard grid reads, and fetches its pictures |
 
 ## The two things worth doing first
 
@@ -88,14 +89,26 @@ copy, so a database problem can never cost a week of observations.
 
 Supabase project **`zgqywowejxtokqsybqnu`** (`Loppan`, region `eu-north-1`), free tier.
 
-Tables: `strata` · `cohort_items` · `cohort_checks` · `circle_roundtrips` ·
-`item_ladders`, plus views `v_cohort_status` and `v_cohort_summary`.
+Tables: `items` · `brands` · `strata` · `cohort_items` · `cohort_checks` ·
+`circle_roundtrips` · `circle_origins` · `item_ladders` · `peer_prices` ·
+`predictor_daily` · `brand_daily` · `shortlist_daily`, plus the `v_*` views.
 
-RLS is enabled on every table with **no policies**, so the publishable key can
-read and write nothing *through the tables*. Three curated views —
-`v_candidates`, `v_cohort_summary`, `v_circle_outcomes` — are deliberately
-readable without a login, because the dashboard has none. Treat their contents as
-public and see `docs/api-notes.md` before changing that.
+**Reads require a login *and* the allowlist.** Every table has RLS on with a policy
+scoped `to authenticated using (is_allowed())`, and the views are
+`security_invoker = on`, so they inherit it. An anonymous caller gets `401`; a
+signed-in non-member gets `[]`; a member sees everything. Add one with
+`insert into public.app_users (email, note) values (...)`.
+
+⚠️ This README previously said three curated views were "readable without a login".
+That was true for about a day in August 2026 and was reverted; the wording outlived
+the change. Verified closed again 2026-08-10 over HTTP with the publishable key.
+`docs/api-notes.md` has the history and the reasoning.
+
+⚠️ **Supabase's default privileges grant `select` on every new view to `anon`.** RLS
+still stops the read, but a `security_invoker` view then makes `anon` evaluate
+`is_allowed()`, which it cannot execute — so the endpoint answers with the name of
+an internal function instead of an empty result. Revoke explicitly when adding a
+view; `v_shortlist` needed it.
 
 The scripts authenticate with the service-role key, read
 from the environment and never committed:
@@ -126,8 +139,31 @@ select * from public.v_cohort_summary;
 
 ## Dashboard
 
-A read-only Lovable app over the three public views — candidates, cohort strata
-and completed round trips: <https://lovable.dev/projects/413a5b63-ebb6-4f60-a90a-72244eeb39f2>
+A read-only Lovable app at <https://loppan.lovable.app>
+(editor: <https://lovable.dev/projects/413a5b63-ebb6-4f60-a90a-72244eeb39f2>).
+Three screens: **Undervalued**, the cohort strata, and completed round trips. It
+signs in against Supabase Auth, never writes, and reads nothing the daily jobs do
+not already collect.
 
-It has no login by design, which is why those views bypass RLS. It never writes,
-and it reads nothing the daily jobs do not already collect.
+### Undervalued — the picture grid
+
+~500 live items priced low against comparable live listings, from `v_shortlist`,
+sortable on every price- and demand-driving column and filterable on the rest.
+
+It is a **precomputed table, not a live query**, because ranking the shelf costs a
+seq scan over 693k rows and 3.0 s — over the anon statement timeout. Stored, it
+answers in 4.9 ms. Rebuild it with:
+
+```bash
+python loppan/shortlist.py
+```
+
+Runs automatically as the last step of `track.yml`, after `analytics.py`, and must
+stay there — it reads `peer_prices` and `brand_daily`, which those steps rebuild.
+
+**Two things it will mislead you about if you let it.** A large discount usually
+means a mismatched peer group, so `peer_n` and the grouping are on every card. And
+cheap is not the same as sells — several brands near the top sell **0.00%/day** —
+so `brand_sell_pct_day` is there too. There is deliberately **no profit figure**:
+`price_to_estimate` is null on all 671k live items since the v2 rehaul, so the old
+`expected_profit` cannot be computed and must not be faked. See `docs/analytics.md` §8.

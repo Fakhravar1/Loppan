@@ -158,3 +158,20 @@ jobs:
         # readable state, and a day with no analytics row is harder to spot later
         # than one whose row is merely built on fewer observations.
         run: python3 loppan/analytics.py
+
+      - name: Rebuild the undervalued shortlist
+        env:
+          LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
+        # Last, because it reads what both steps above write: peer_prices for the
+        # ranking and brand_daily for the per-brand columns. Running it earlier would
+        # rank against yesterday's shelf, which is the same trap the analytics order
+        # exists to avoid.
+        #
+        # The only step here that talks to Algolia, and it does so for ~500 items —
+        # about five requests — to attach the pictures the dashboard shows. Images
+        # live nowhere in the database; see loppan/shortlist.py for why.
+        #
+        # Deliberately not `continue-on-error`: unlike the analytics layer, a missing
+        # shortlist is immediately visible as an empty grid, so a loud failure costs
+        # nothing and a quiet one would leave yesterday's picks looking like today's.
+        run: python3 loppan/shortlist.py

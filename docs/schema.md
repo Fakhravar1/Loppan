@@ -183,18 +183,56 @@ populated; the rest have no live item left in the index to read. `population_lis
 `recompute_sample_weights()` derives the weights from, and what makes inclusion
 probability known rather than assumed.
 
+**`shortlist_daily`** (~500/day, 30-day window) — the undervalued shortlist the dashboard
+grid reads, one row per item per pass. Deliberately **denormalised**: brand names, lookup
+values, decoded masks and the brand-level aggregates are all copied in, because the grid
+sorts on every one of them and a computed column in a view cannot be indexed. Written by
+`refresh_shortlist()`, then given its pictures by `loppan/shortlist.py`. See
+`analytics.md` §8.
+
+⚠️ **Every column named `_pct` here is a percentage, 0–100** — including `discount_pct`,
+`peer_pct` and `markdown_pct`, which are scaled on write from the 0–1 fractions their
+sources use. `brand_attention_index` is the exception and stays a ratio, because 1.00 =
+"exactly the attention its mix deserves" is the entire meaning of that number.
+
 ---
 
 ## Deliberately not collected
 
 | | Why |
 |---|---|
-| `images` | Reconstructible from `item_id`; 4.7 URLs per item was the single largest per-row cost |
+| `images` | Re-fetchable by `item_id` from Algolia; 4.7 URLs per item was the single largest per-row cost. ⚠️ **Not *computable* from `item_id`** — see below |
 | `keywords`, `concept`, `style` | Sellpy's generated text tags. Available if text features become interesting |
 | `relevanceRanking*`, `proximityBucket*` | Sellpy's own ranking and personalisation. These **cause** sales by controlling visibility — endogenous, and they leak the outcome into the features |
 | `itemAbTestFraction` | Sellpy runs experiments on these items. Worth capturing to *detect* a confounder, never to train on |
 | `storeIds`, `storageSite`, `bag`, `itemIO`, `user` | Operational identifiers, not properties of the item |
 | `estimateBid_rounded` | Present on ~1% of items |
+
+### The image claim was wrong, and cost a dashboard rebuild to find (2026-08-10)
+
+This table used to say images were "reconstructible from `item_id`". They are not, in the
+sense anyone would read that. A real URL looks like:
+
+```
+https://prod.images.sellpy.net/photoRobot-case-14-k-8/IWCFH2lSCH-0fca-0.jpg
+                               └── one of ~200 stations ─┘ └id┘ └hex┘
+```
+
+The folder is whichever photo station shot the item — `photoRobot-case-14-k-8`,
+`photoRobot-hanging-10-k-3`, `phone-images` and so on, sampled across 3,000 items — and
+the segment after the id is a random four-hex suffix. Neither is derivable from anything
+we store, and phone-uploaded images carry no station folder at all. **There is no formula.
+An image costs a lookup.**
+
+What is true, and is what the wording was reaching for: the lookup is *cheap*. Algolia
+returns the whole `images` array on a by-id fetch, 100 ids per request, so pictures for a
+500-item shortlist cost about five requests. `loppan/shortlist.py` does exactly that. Do
+**not** generalise it to the whole shelf — 671k live items would be ~7,000 requests and
+~190 MB, which is why the column was dropped in the first place.
+
+Store the **path**, not the URL, per `search.image_paths`: Parse serves a private S3 URL
+that 403s while the search index serves the public CDN, and the path after the host is
+identical.
 
 ---
 

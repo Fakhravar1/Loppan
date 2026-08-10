@@ -630,6 +630,23 @@ instead of `[]`. Same access outcome, but it leaks the existence and name of an
 internal function to an anonymous caller. `item_scores` was created unscoped and
 had to be corrected — match the existing pattern.
 
+⚠️ **The same leak arrives by a second route: the grant, not the policy.** Supabase's
+default privileges hand `anon` a `SELECT` on every **new view**, and the write fix
+above does not cover it. A `security_invoker` view with that grant sends `anon`
+straight into `is_allowed()` on the base table and produces the identical
+function-name error. `v_shortlist` was created this way on 2026-08-10 and needed an
+explicit `revoke all ... from anon` — granting only to `authenticated` is **not**
+enough, because the default grant is additive and silent. After adding any view,
+check rather than assume:
+
+```sql
+select has_table_privilege('anon', 'public.v_yours', 'SELECT');
+```
+
+Then confirm over HTTP with the publishable key, which is the only test that proves
+anything — the admin role proves nothing. Closed state is `401 permission denied for
+view v_yours`.
+
 The section below describes the *opened* configuration, kept because it is the
 reference for how to reopen it deliberately.
 
@@ -688,10 +705,18 @@ key:  the PUBLISHABLE key (safe in a browser — it grants nothing without a ses
 Sign in, then query. Everything is filterable and sortable:
 
 ```
-/rest/v1/v_candidates?order=score.desc&price_kr=gte.400&brand=eq.Ganni
-/rest/v1/v_candidates?cap_binds=is.true&order=expected_profit.desc
-/rest/v1/v_candidates?out_of_season_now=is.true&premium_fibre=is.true
+/rest/v1/v_shortlist?order=discount_pct.desc&price_kr=gte.400
+/rest/v1/v_shortlist?out_of_season=is.true&order=favs_per_month.desc
+/rest/v1/v_shortlist?brand_sell_pct_day=gte.2&order=discount_pct.desc
 ```
 
-`thumbnail` and `images` are ready-built CDN URLs. Sellpy honours no resize
+⚠️ `v_candidates` no longer exists — it went in the v2 rehaul along with `catalogue`
+and `item_scores`, and with it `score`, `expected_profit`, `cap_binds` and
+`premium_fibre`. Its replacement is `v_shortlist`, which is a different quantity:
+cheap against *live peers*, not against Sellpy's value estimate. There is no profit
+column, because `price_to_estimate` is null on every live item since the rehaul.
+
+`v_shortlist` is ~500 rows and every column is stored, so **fetch it whole and sort
+client-side** rather than issuing a query per sort. `thumbnail` and `images` are
+ready-built CDN URLs on `prod.images.sellpy.net`. Sellpy honours no resize
 parameters, so scale client-side.

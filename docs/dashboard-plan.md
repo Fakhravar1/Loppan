@@ -1,7 +1,21 @@
 # Analytics dashboard — architecture plan
 
-Planning document, nothing built. Supersedes the first Lovable dashboard, whose
-views were dropped in the v2 rehaul.
+Planning document. Supersedes the first Lovable dashboard, whose views were dropped in
+the v2 rehaul.
+
+> **Status, 2026-08-10.** Screen 3 (relative pricing) is **built and live** as the
+> *Undervalued* grid — `shortlist_daily` / `v_shortlist`, `loppan/shortlist.py`, and a
+> picture grid in the Lovable app. See `analytics.md` §8. Everything else below is still
+> plan.
+>
+> Building it confirmed principle 1 the expensive way a second time: the ranking query
+> was **3.0 s** against a ~3 s timeout until the results were stored, then **4.9 ms**.
+>
+> It also settled one thing this document assumed was available. Screen 3 was meant to
+> replace Sellpy's value estimate — but `price_to_estimate` is now **null on all 671,075
+> live items**, so the shortlist can only say *cheap against live peers*, never *cheap
+> against worth*. The peer comparison is not a stand-in for value; it is a different
+> question that happens to be answerable.
 
 ---
 

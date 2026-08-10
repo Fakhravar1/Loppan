@@ -4,8 +4,9 @@ What gets computed after every track pass, what each number means, and the three
 this data will lie to you if you query it naively.
 
 `overview.md` is why the project exists, `schema.md` is what we collect, this is what we
-derive from it. Everything here is rebuilt by `loppan/analytics.py`, which runs as the
-last step of `.github/workflows/track.yml`.
+derive from it. Sections 2–7 are rebuilt by `loppan/analytics.py`; §8, the dashboard
+shortlist, by `loppan/shortlist.py` immediately after it. Both run as the closing steps of
+`.github/workflows/track.yml`.
 
 ---
 
@@ -30,6 +31,16 @@ yesterday's shelf; and the freeze reads outcomes `track.py` has only just writte
 
 All three **replace their own day's rows** rather than appending. Re-running after a
 failure is safe and is the intended response to a timeout.
+
+A fourth step runs after these three, as its own script rather than part of
+`analytics.py`, because it is the only one that makes network requests:
+
+```bash
+python loppan/shortlist.py
+```
+
+It reads what all three write — `peer_prices` for the ranking, `brand_daily` for the
+per-brand columns — so it must come last. See §8.
 
 ---
 
@@ -332,3 +343,81 @@ pages around this with Range headers and says so in its docstring; `db.rpc` does
 `brand_sample_items()` therefore returns a single `json` value instead of a set, which is
 the same dodge `dash_overview()` uses. **Any new set-returning RPC expecting more than
 1,000 rows has this bug until proven otherwise.**
+
+---
+
+## 8. `shortlist_daily` — the undervalued grid
+
+The dashboard's buy list: ~500 live items priced low against comparable live listings,
+rebuilt each pass by `refresh_shortlist()` and given its pictures by
+`loppan/shortlist.py`.
+
+### Why it is a table and not a view
+
+Ranking the live shelf on peer-relative cheapness costs a parallel sequential scan over
+693k `items` rows plus a sort — **3.0 s measured**, against the anon role's ~3 s statement
+timeout. That is the same wall `item_scores` was built to get around in the v1 dashboard
+(`api-notes.md`, "Why `score` is stored, not computed"), rediscovered because the v2
+rehaul dropped `v_candidates` and nothing replaced it.
+
+So everything the grid sorts on is **stored**, pre-joined and denormalised onto 500 rows.
+The same query against the finished table is **4.9 ms** — 600× faster, and small enough
+that the frontend fetches the whole thing once and sorts in the browser.
+
+### What "undervalued" can mean today, and what it cannot
+
+Only one thing: **cheap relative to live peers**, from `peer_prices`.
+
+⚠️ **There is no profit estimate any more, and there cannot be one.** The old
+`expected_profit` / `cap_binds` scoring divided by `priceToEstimateRatio`, which came from
+the Typesense ~5% subset. `items.price_to_estimate` is now **null on all 671,075 live
+rows**. Anything reintroducing a profit number needs a new source for V first — do not
+reconstruct it from `discount_pct`, which is a comparison against other *asking* prices,
+not against value.
+
+### The gate
+
+Each clause removes something that is *not an opportunity*, rather than something merely
+unattractive — the grid sorts on everything, so taste is the reader's job.
+
+| Clause | Default | Why |
+|---|---|---|
+| price floor | 200 kr | below it the peer signal **inverts** outright (§2) |
+| `peer_n` | ≥ 30 | a percentile off six peers is noise |
+| `peer_level` | ≤ 2 | level 3 averages 1,832 peers and compares across brands |
+| `favourites` | ≥ 1 | 0 favourites sells at 0.17%/day against 3.77% at 21+ |
+| `is_reserved` | false | someone is already buying it |
+| per brand | ≤ 15 | one badly-formed peer group would otherwise flood all 500 slots |
+
+Ranked on `discount_pct` descending. **`rank` is selection order, not a recommendation** —
+it records how a row got in, not that rank 1 is the best buy.
+
+### Two ways this screen will mislead a reader, by construction
+
+**A large discount is often a mismatched peer group.** A Burberry *Foder* (a lining) shows
+an 86% discount because its peer group is Burberry outerwear. Nothing filters this out, so
+`peer_n` and `peer_level` are printed on every card and the interface names the grouping in
+words rather than showing a level number.
+
+**Cheap is not the same as sells.** The top of the list runs to evening gowns, and
+`brand_daily` puts several of those brands at **0.00% sold/day** — Gown Gallery among
+them. `brand_sell_pct_day` therefore sits on every card, and a zero is called out. A
+discount on something nobody buys at any price is not a discount.
+
+### Images
+
+`shortlist_daily` is the only place in the database with any. They are fetched from
+Algolia for the shortlist only — about five requests — because the URL is **not derivable
+from `item_id`** (`schema.md`, "The image claim was wrong"). Paths are stored without a
+host; `v_shortlist` prepends the CDN.
+
+Absence from Algolia is recorded rather than discarded: sold items are deleted from that
+index within the day, so `still_listed = false` is a free liveness check on the picks.
+First run, 2026-08-10: **18 of 500 had already gone** in the hours since the pass.
+
+### Retention
+
+30 days, not one. Keeping the window is what will later answer *did the items we flagged
+actually sell?* — the shortlist becomes its own small observational study at no extra
+collection cost. Keeping it forever would put it on `brand_daily`'s growth curve, and
+storage is already the binding constraint (§6).
