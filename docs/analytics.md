@@ -596,14 +596,25 @@ rest away.
 
 | | Storing everything | Rotation |
 |---|---|---|
-| Held to compute the comparison | ~558 MB | **~146 MB** (one bucket) |
-| Coverage | full market | full market, over 4 days |
+| Held to compute the comparison | ~558 MB | **~61 MB** (one bucket) |
+| Coverage | full market | full market, over the cycle |
 | Peer groups | complete | **complete** |
 
 ### Buckets
 
-`crc32(brand) % 4`. No mapping table, new brands assign themselves, and it splits the
-target market **24.4 / 24.4 / 24.7 / 26.6 %** — measured, not assumed.
+`crc32(brand) % 12`. No mapping table, new brands assign themselves, and the twelve
+buckets average 118,031 items and 557 brands, the largest holding 10.37% of the target
+market against an even 8.33%.
+
+**Twelve rather than four, and the reason is worth keeping.** The first attempt used
+four. A bucket is held whole in `sweep_staging` while its groups are computed, and at a
+measured 433 bytes a staged row, a quarter of the market projects to ~142 MB against a
+500 MB tier. The first full-bucket run was stopped partway when the arithmetic became
+clear. Twelve puts the peak at **61 MB** for the largest bucket.
+
+Raising the count costs nothing in cycle time if the job runs more than once a day —
+twelve buckets at four runs a day is a three-day rotation — and it makes each run
+shorter, so a failure costs less.
 
 `public.crc32()` reproduces Python's `zlib.crc32` exactly, verified on ASCII and UTF-8
 brand names, so SQL and `loppan/sweep_pool.py` can never drift apart. Deliberately not

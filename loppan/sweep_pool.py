@@ -41,7 +41,15 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from loppan import algolia, db, enrol, search, sizes
 
-BUCKETS = 4
+# 12, not 4. A bucket is held in `sweep_staging` in full while its peer groups are
+# computed, and at 433 bytes a staged row a quarter of the market is ~142 MB against a
+# 500 MB tier -- measured 2026-08-10 by running it and watching it climb. Twelve puts
+# the peak at ~47 MB, which leaves room for the pool to grow into full coverage.
+#
+# Raising this does not slow the cycle down if the job runs more than once a day: at
+# four runs a day, twelve buckets is a three-day rotation. It also makes each run
+# shorter -- ~1,500 brands instead of ~4,500 -- so a failure costs less.
+BUCKETS = 12
 MIN_PRICE_KR = 200      # the shortlist floor; below it the peer signal inverts
 MIN_BRAND_ITEMS = 8     # a group needs 8 to exist, so thinner brands cannot produce one
 PER_SHAPE = 1000        # Algolia's hard ceiling per request
