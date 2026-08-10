@@ -576,3 +576,72 @@ The first is the real answer once storage allows it. It also stops being a brows
 problem and becomes an indexed-query problem, which is the easier of the two —
 `shortlist_daily` is indexed on `(as_of, size_area)` and `(as_of, size_group,
 size_system, size_value)` for exactly that future.
+
+---
+
+## 9. The rotation sweep — covering a market you cannot afford to store
+
+Built 2026-08-10. The pool stops being derived from `items` and starts being swept
+directly, a quarter of the brands at a time.
+
+### The idea it rests on
+
+You do not have to **keep** a peer group, only to know it long enough to rank against
+it. That distinction is what makes the whole market affordable.
+
+Levels 1 and 2 group on `(brand, item_type, condition)` and `(brand, category)` — both
+entirely inside a brand. So a sweep that takes **whole brands** holds every usable group
+*complete* while it works, ranks against it exactly, keeps the cheap tail, and throws the
+rest away.
+
+| | Storing everything | Rotation |
+|---|---|---|
+| Held to compute the comparison | ~558 MB | **~146 MB** (one bucket) |
+| Coverage | full market | full market, over 4 days |
+| Peer groups | complete | **complete** |
+
+### Buckets
+
+`crc32(brand) % 4`. No mapping table, new brands assign themselves, and it splits the
+target market **24.4 / 24.4 / 24.7 / 26.6 %** — measured, not assumed.
+
+`public.crc32()` reproduces Python's `zlib.crc32` exactly, verified on ASCII and UTF-8
+brand names, so SQL and `loppan/sweep_pool.py` can never drift apart. Deliberately not
+`hashtext()` (unreproducible outside Postgres) and not Python's `hash()` (salted per
+process, so it would reshuffle every brand on every run).
+
+### What runs
+
+```bash
+python loppan/sweep_pool.py            # today's bucket
+python loppan/sweep_pool.py --bucket 2
+python loppan/sweep_pool.py --limit 40 # a slice, for testing only
+```
+
+`sweep_staging` holds the bucket, `refresh_pool_bucket()` computes its peer groups,
+writes the survivors into `shortlist_daily` with `swept_on`, and **truncates staging**.
+
+First run, 40 brands of bucket 0: 1,005 items staged from 11 brands with enough depth,
+201 kept, staging emptied, 31 s. Extrapolates to roughly 22 minutes for a full bucket.
+
+Every invariant held: `peer_n` never below 12, `peer_pct` never above 25, only levels 1
+and 2, and every row carried an image and a decoded size area.
+
+### Three constraints worth writing down
+
+⚠️ **`peer_level` 3 becomes permanently uncomputable.** It groups on brand tier across
+the whole market, and no single bucket holds that. The shortlist gate is already
+`peer_level <= 2` so nothing is lost today — but that gate can never be relaxed while
+the sweep is bucketed by brand. Rare luxury needs a different mechanism.
+
+⚠️ **Freshness is uneven by design.** A brand swept on Monday is four days old by
+Thursday. `swept_on` carries that so the interface can show it rather than hide it.
+Prices and `still_listed` can be refreshed daily across the whole pool for ~1,300
+Algolia requests; the peer median cannot, and is as old as its bucket.
+
+⚠️ **`sweep_staging` must never be copied into `items`.** It is deliberately biased — a
+quarter of the brands, and only sizes that fit two specific people. `items` is the
+stratified sample with known inclusion probabilities that `brand_daily`,
+`predictor_daily` and every sell rate depend on. Pooling them would quietly turn every
+market estimate into "…among things that happen to fit us". §8 makes the same point
+about the candidate pool; this is the same rule one level further out.
