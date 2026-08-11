@@ -16,13 +16,26 @@ shortlist, by `loppan/shortlist.py` immediately after it. Both run as the closin
 python loppan/analytics.py
 ```
 
-Three database functions, in sequence, all *after* `track.py`:
+Seven database calls, in order, all *after* `track.py`. The first five are the peer
+rebuild, split out of what used to be a single `refresh_peer_prices()`:
 
 | | Function | Writes | Cost |
 |---|---|---|---|
-| 1 | `refresh_peer_prices()` | `items.peer_*_frozen`, then rebuilds `peer_prices` | ~59 s |
-| 2 | `snapshot_predictors()` | `predictor_daily` | ~65 s |
-| 3 | `snapshot_brands()` | `brand_daily` | ~19 s |
+| 1 | `freeze_peer_prices()` | `items.peer_*_frozen` | ~10 s |
+| 2 | `stage_peer_live()` | truncates `peer_prices`, fills `peer_live` | ~14 s |
+| 3 | `score_peer_level(1)` | `peer_prices`, brand + garment + condition | ~10 s |
+| 4 | `score_peer_level(2)` | `peer_prices`, brand + category | ~8 s |
+| 5 | `score_peer_level(3)` | `peer_prices`, tier + garment | ~8 s |
+| 6 | `snapshot_predictors()` | `predictor_daily` | ~51 s |
+| 7 | `snapshot_brands()` | `brand_daily` | ~19 s |
+
+`refresh_peer_prices()` still exists and still does all of 1–5 in one transaction. It is
+for running **by hand against the database**, where there is no gateway — it takes
+70–99 s and therefore cannot be called over the API at all. See below.
+
+⚠️ **`snapshot_predictors()` at ~51 s is the next one to hit this.** The limit is 60 s
+and it is not shrinking. When it goes, split it the same way rather than rediscovering
+the problem.
 
 Step 1 must come before step 2, because step 2 reads the frozen peer position as one of
 its features. All three must come after `track.py`, for two separate reasons: peer groups
@@ -68,13 +81,39 @@ server-side, so re-running `track` while a previous one is still going produces
 `55P03 canceling statement due to lock timeout` on `snapshot_predictors` — a second,
 confusing failure caused entirely by retrying the first.
 
-The fix has to remove the need to hold an HTTP request open for 99 s. In rough order of
-appeal: make the statement faster; split the freeze and the rebuild into two calls, each
-comfortably under 60 s; or run it detached (`pg_cron`) and have `analytics.py` verify the
-outcome rather than await it. Until one of those lands, **the peer freeze must be run by
-hand** — `select public.refresh_peer_prices();` straight against the database, which has
-no gateway in the way — and `track` will keep reporting one failed step of three while
-the other two snapshots complete normally.
+**Fixed 2026-08-11 by splitting it into five calls** (steps 1–5 in §1). Two calls would
+not have been enough, which is worth knowing before someone tries the obvious thing:
+freeze is only 10 s, so the rebuild half would still have been ~59 s warm and ~89 s cold
+— sitting exactly on the limit and failing whenever the cache was cold.
+
+Two structural obstacles shaped the split:
+
+- **The old `_live` was a temp table**, `on commit drop`, and each API call is its own
+  connection. The rebuild could not be split at all while it depended on one. It is now
+  `peer_live`, a real UNLOGGED table — unlogged because it is rebuilt from `items` every
+  pass and worthless after one, so crash-safety would be pure write cost.
+- **`truncate` now commits on its own.** The rebuild used to be a single transaction, so
+  readers saw the old data until it was complete; split, `peer_prices` is genuinely empty
+  for ~40 s. That is survivable here and only here: no view reads `peer_prices`, and the
+  one code reader — `shortlist.py` — runs after analytics in the same workflow and
+  already exits cleanly on an empty table.
+
+**Two guards exist because splitting removed the ordering that "it is all one statement"
+used to give for free**, and this is the one place in the project where wrong order
+destroys unrecoverable data:
+
+- `stage_peer_live()` refuses to truncate while any resolved item still holds an unfrozen
+  peer row. Without it, a failed freeze followed by a successful stage would throw away
+  the peer position of every newly-resolved item — the exact bug §2 records as fixed.
+- `score_peer_level()` refuses to run against staging older than 30 minutes, so a failed
+  stage cannot leave yesterday's shelf to be scored as though it were today's.
+
+`analytics.py` also skips the rest of the `peer` chain once one of its steps fails, so
+the guards are the second line rather than the first. Both were verified by simulating
+the failure, not by reading the code.
+
+Verified after the split: 365,938 + 209,589 + 71,524 = **647,051 rows, identical to the
+single-call total**, worst step 14.1 s.
 
 A fourth step runs after these three, as its own script rather than part of
 `analytics.py`, because it is the only one that makes network requests:

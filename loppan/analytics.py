@@ -40,10 +40,33 @@ from loppan import db
 # crosses midnight UTC — otherwise a pass starting at 23:59 writes peer freezes
 # under one date and predictors under the next, and the join between them silently
 # misses a day.
+AS_OF = object()   # placeholder, swapped for the run's date in main()
+
+# name, params, unit, chain
+#
+# The peer rebuild is five calls rather than one because `refresh_peer_prices()` grew to
+# 99 s and Supabase's API gateway cuts a request at 60 s -- so the single call failed
+# every time while committing anyway. Measured after the split, worst step 14.1 s.
+#
+# `chain` is not decoration. The peer steps are strictly ordered and destructive:
+# stage_peer_live() truncates peer_prices, and the levels each place only what the
+# previous level could not. A later step running after an earlier one failed would
+# either destroy the freeze or score against stale staging, so a failure inside a chain
+# skips the rest of it. The snapshots have no chain: they are genuinely independent,
+# which is the whole reason this script carries on past failures at all.
+#
+# The database enforces both orderings too -- stage refuses while unfrozen resolved rows
+# exist, the levels refuse against staging older than 30 minutes. Belt and braces on
+# purpose: this is the one place in the project where getting the order wrong destroys
+# data that cannot be recovered.
 STEPS = [
-    ("refresh_peer_prices", None,          "live rows scored"),
-    ("snapshot_predictors", "p_as_of",     "feature rows written"),
-    ("snapshot_brands",     "p_as_of",     "brands snapshotted"),
+    ("freeze_peer_prices",  {},                 "resolved items frozen",   "peer"),
+    ("stage_peer_live",     {},                 "live rows staged",        "peer"),
+    ("score_peer_level",    {"p_level": 1},     "items scored at level 1", "peer"),
+    ("score_peer_level",    {"p_level": 2},     "items scored at level 2", "peer"),
+    ("score_peer_level",    {"p_level": 3},     "items scored at level 3", "peer"),
+    ("snapshot_predictors", {"p_as_of": AS_OF}, "feature rows written",    None),
+    ("snapshot_brands",     {"p_as_of": AS_OF}, "brands snapshotted",      None),
 ]
 
 
@@ -56,21 +79,34 @@ def main() -> None:
     print(f"analytics layer for {as_of}")
 
     failed = []
-    for name, date_param, unit in STEPS:
-        params = {date_param: as_of} if date_param else None
+    broken_chains = set()
+    for name, params, unit, chain in STEPS:
+        label = f"{name}({params['p_level']})" if "p_level" in params else name
+
+        if chain in broken_chains:
+            print(f"  {label}: SKIPPED — an earlier '{chain}' step failed and the rest "
+                  f"of that chain would work on half-built state", file=sys.stderr)
+            failed.append(label)
+            continue
+
+        call = {k: (as_of if v is AS_OF else v) for k, v in params.items()}
         started = dt.datetime.now()
         try:
-            result = db.rpc(name, params)
+            result = db.rpc(name, call or None)
         except RuntimeError as exc:
-            # Carry on rather than aborting: the three are independent enough that
+            # Carry on rather than aborting: the snapshots are independent enough that
             # losing the brand snapshot is no reason to also lose the predictors,
             # and a half-built layer is easier to reason about than one that stops
             # at a different step every time something is slow.
-            print(f"  {name}: FAILED — {exc}", file=sys.stderr)
-            failed.append(name)
+            #
+            # Steps in a chain are the exception — see STEPS.
+            print(f"  {label}: FAILED — {exc}", file=sys.stderr)
+            failed.append(label)
+            if chain:
+                broken_chains.add(chain)
             continue
         secs = (dt.datetime.now() - started).total_seconds()
-        print(f"  {name}: {result:,} {unit} in {secs:.0f}s")
+        print(f"  {label}: {result:,} {unit} in {secs:.0f}s", flush=True)
 
     if failed:
         sys.exit(f"{len(failed)} of {len(STEPS)} steps failed: {', '.join(failed)}")
