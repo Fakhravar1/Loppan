@@ -349,9 +349,33 @@ price-split recursion. Those buffers come from glibc malloc, which holds freed h
 rather than returning it once fragmented. It tracks *requests*, not items — which is
 exactly why the per-item fit kept nearly working and then broke.
 
-Two fixes, cheap first: `MALLOC_ARENA_MAX=2` in `pool.yml` (a cap on glibc's arenas),
-and if that does not move it, **connection reuse in `algolia._post`** — which would be
-faster as well as smaller, since it would stop paying a TLS handshake per request.
+Both fixes were tried on 2026-08-11. Results, because neither went as predicted:
+
+| | peak RSS | wall clock |
+|---|---|---|
+| bucket 6, before | 234 MB (21,903 items) | 7:24 |
+| bucket 7, before | 264 MB (32,276 items) | 8:58 |
+| **bucket 8, with connection reuse** | **210 MB (25,217 items)** | **4:47** |
+
+`MALLOC_ARENA_MAX=2` did nothing at all, and the test was invalid anyway: this path is
+single-threaded, so glibc uses the main arena and an arena cap could never apply. It has
+been removed rather than left as a plausible-looking knob.
+
+**Connection reuse bought a large speed win and a small memory one.** ~40% faster is the
+TLS handshake per request disappearing, and that is worth having on its own. But peak
+only fell to 210 MB on a bucket *larger* than the one that cost 234 MB — call it 10–20%,
+and the buckets are not the same size, so even that is soft.
+
+So TLS churn was **a** contributor and not the main one. Roughly 200 MB is still
+unaccounted for: not Python objects (16 MB traced, nothing retained), not obmalloc
+fragmentation, not per-brand buffering, not items staged.
+
+**Recommendation: stop here.** The term plateaus rather than growing — 765 brands and
+1,547 brands both land near 264 MB — so it is not a time bomb that the pool will grow
+into. It sits under a 400 MB ceiling that has never once fired across every pass on the
+worst day this box has had. Four hypotheses have now been tested and killed at
+meaningful cost, including two that took the runner down. The next person should pick
+this up only with a reason better than tidiness.
 
 ⚠️ **Do not run `tracemalloc` on the Pi to check this.** Its bookkeeping does not fit
 beside the job in a 300 MB cgroup: 25 frames gave 114,002 throttle events and load 27,
