@@ -45,15 +45,26 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from loppan import algolia, db, enrol, search, sizes
 
-# 12, not 4. A bucket is held in `sweep_staging` in full while its peer groups are
-# computed, and at 433 bytes a staged row a quarter of the market is ~142 MB against a
-# 500 MB tier -- measured 2026-08-10 by running it and watching it climb. Twelve puts
-# the peak at ~47 MB, which leaves room for the pool to grow into full coverage.
+# 24, raised from 12 on 2026-08-11. Two separate ceilings care about this number.
 #
-# Raising this does not slow the cycle down if the job runs more than once a day: at
-# four runs a day, twelve buckets is a three-day rotation. It also makes each run
-# shorter -- ~1,500 brands instead of ~4,500 -- so a failure costs less.
-BUCKETS = 12
+# Storage: a bucket is held in `sweep_staging` in full while its peer groups are
+# computed, at a measured 433 bytes a staged row. A quarter of the market was ~142 MB
+# against a 500 MB tier; a twelfth ~61 MB; a twenty-fourth ~30 MB.
+#
+# Memory: peak RSS of a pass scales with the items it stages -- 3.7, 4.3 and 4.1 KB per
+# staged item measured across buckets 5, 4 and 3 -- so halving the bucket halves the
+# peak. That is what this change is for. Bucket 3 staged 66,003 items at 264 MB against
+# a 400 MB cgroup ceiling, which was the thinnest margin on the Pi. See docs/pi-runner.md.
+#
+# Raising it does not slow the cycle down if the job runs more often: 24 buckets at 12
+# runs a day is a TWO-day rotation, faster than the three days 12-at-4 gave. It also
+# makes each run shorter -- ~775 brands instead of ~1,550 -- so a failure costs less.
+#
+# Changing it reshuffles every brand, since the bucket is crc32(brand) % BUCKETS. That
+# is safe and self-healing: the new buckets hold no rows, `next_sweep_bucket` orders
+# `nulls first` so it sweeps them before anything else, and `refresh_pool_bucket`'s
+# delete-by-item_id clears each brand's stale rows from its old bucket as it reappears.
+BUCKETS = 24
 MIN_PRICE_KR = 200      # the shortlist floor; below it the peer signal inverts
 MIN_BRAND_ITEMS = 8     # a group needs 8 to exist, so thinner brands cannot produce one
 PER_SHAPE = 1000        # Algolia's hard ceiling per request
@@ -88,7 +99,7 @@ def _arg(flag: str, default=None):
 
 
 def bucket_of(brand: str) -> int:
-    """Matches `public.crc32(brand) % 4` in Postgres, verified on ASCII and UTF-8 names.
+    """Matches `public.crc32(brand) % BUCKETS` in Postgres, verified on ASCII and UTF-8.
 
     Not `hash()`: Python salts string hashing per process, so it would reshuffle every
     brand on every run and the rotation would re-sweep some brands while starving
@@ -100,7 +111,7 @@ def bucket_of(brand: str) -> int:
 def next_bucket() -> int:
     """Whichever bucket has gone longest without a sweep.
 
-    Not a formula over the date. The job runs four times a day, so `date % BUCKETS`
+    Not a formula over the date. The job runs many times a day, so `date % BUCKETS`
     would pick the same bucket every time and never advance — and any date-and-hour
     formula silently skips a bucket whenever a run fails, with nothing to notice.
 

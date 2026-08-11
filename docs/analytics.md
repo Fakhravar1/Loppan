@@ -644,19 +644,40 @@ rest away.
 
 ### Buckets
 
-`crc32(brand) % 12`. No mapping table, new brands assign themselves, and the twelve
-buckets average 118,031 items and 557 brands, the largest holding 10.37% of the target
-market against an even 8.33%.
+`crc32(brand) % 24`. No mapping table, new brands assign themselves, and the buckets
+divide the target market roughly evenly (at twelve they averaged 118,031 items and 557
+brands, the largest holding 10.37% against an even 8.33%; twenty-four halves both).
 
-**Twelve rather than four, and the reason is worth keeping.** The first attempt used
-four. A bucket is held whole in `sweep_staging` while its groups are computed, and at a
-measured 433 bytes a staged row, a quarter of the market projects to ~142 MB against a
-500 MB tier. The first full-bucket run was stopped partway when the arithmetic became
-clear. Twelve puts the peak at **61 MB** for the largest bucket.
+**Four, then twelve, then twenty-four — each step forced by a different ceiling, and
+the sequence is worth keeping.**
 
-Raising the count costs nothing in cycle time if the job runs more than once a day —
-twelve buckets at four runs a day is a three-day rotation — and it makes each run
-shorter, so a failure costs less.
+The first attempt used four. A bucket is held whole in `sweep_staging` while its groups
+are computed, and at a measured 433 bytes a staged row, a quarter of the market projects
+to ~142 MB against a 500 MB **storage** tier. The first full-bucket run was stopped
+partway when the arithmetic became clear. Twelve put that peak at ~61 MB.
+
+Twenty-four came from a different ceiling: **memory, not storage**. Peak RSS of a pass
+scales with the items it stages — 3.7, 4.3 and 4.1 KB per staged item, measured across
+buckets 5, 4 and 3 on 2026-08-11 — and bucket 3's 66,003 items peaked at 264 MB against
+a 400 MB cgroup ceiling on the Pi. That was the thinnest margin on the box. Halving the
+bucket halves the term that was growing. See docs/pi-runner.md, "The second livelock".
+
+Raising the count costs nothing in cycle time if the job runs more often: twenty-four
+buckets at twelve runs a day is a **two-day** rotation, faster than the three days
+twelve-at-four gave. It also makes each run shorter, so a failure costs less.
+
+⚠️ **Changing this reshuffles every brand**, since the bucket is `crc32(brand) % BUCKETS`.
+That is safe and self-healing rather than a migration: the new buckets hold no rows, so
+`next_sweep_bucket` — which orders by `max(swept_on)` with `nulls first` — sweeps them
+before anything else, and `refresh_pool_bucket`'s delete-by-`item_id` clears each brand's
+stale rows from its old bucket as that brand reappears in staging. Expect the pool to
+look lopsided for a rotation while that works through.
+
+⚠️ **`pool_refresh` is not bucket-scoped** — it reads the whole pool every time it runs,
+so its cost scales with how often the *workflow* fires, not with bucket size. When the
+sweep went to twelve runs a day the refresh stayed at four (00/06/12/18 UTC, gated in
+`pool.yml`), so prices are no staler than before and the extra sweep frequency is close
+to free. If you raise the run count again, gate that step again with it.
 
 `public.crc32()` reproduces Python's `zlib.crc32` exactly, verified on ASCII and UTF-8
 brand names, so SQL and `loppan/sweep_pool.py` can never drift apart. Deliberately not

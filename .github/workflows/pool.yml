@@ -9,9 +9,10 @@ name: pool sweep
 # rest. One bucket costs ~146 MB transiently instead of ~558 MB permanently, and the
 # groups are complete rather than sampled. See docs/analytics.md §9.
 #
-# Buckets are crc32(brand) % 4 and the day picks its own, so four days covers the
-# market. `pool_refresh` runs every day regardless of which bucket was swept, because
-# price and still_listed go stale far faster than the peer median does.
+# Buckets are crc32(brand) % BUCKETS and each run asks the data which bucket has gone
+# longest unswept, so the rotation covers the market and self-corrects after a failure.
+# `pool_refresh` runs on a subset of those runs regardless of which bucket was swept,
+# because price and still_listed go stale far faster than the peer median does.
 #
 # ⚠️ The minute is 23 rather than 00. GitHub delays `schedule` events under load and
 # drops them when the backlog is bad, and the top of the hour is the worst slot.
@@ -24,19 +25,21 @@ name: pool sweep
 
 on:
   schedule:
-    # Four a day. Twelve buckets, so the whole market is covered every three days and
-    # nothing in the pool is more than three days old.
+    # Every two hours. 24 buckets at 12 runs a day is a two-day rotation, so nothing in
+    # the pool is more than two days old -- faster than the three days that 12 buckets
+    # at 4 runs gave, and each run stages half as much, which is what keeps peak RSS
+    # under the cgroup ceiling. See docs/pi-runner.md.
     #
-    # Spread across the day rather than bunched: each run is ~13 min and holds a bucket
-    # in `sweep_staging` while it works, so overlapping two would double the transient
+    # Spread rather than bunched: a run is ~8 min and holds its bucket in
+    # `sweep_staging` while it works, so overlapping two would double the transient
     # storage for no benefit. `concurrency` below is the real guard; the spacing just
     # means it never has to fire.
     #
-    # 07:23 sits after track (04:30) and enrol (06:17 / 06:43) so brand_daily is fresh.
-    - cron: "23 7 * * *"
-    - cron: "23 12 * * *"
-    - cron: "23 17 * * *"
-    - cron: "23 22 * * *"
+    # ⚠️ The minute stays 23 for the reason recorded above -- do not round these to the
+    # hour. Runs landing before track (04:30) and enrol (06:17 / 06:43) use the previous
+    # day's `brand_daily`; `refresh_pool_bucket` takes `max(as_of) where as_of <= today`,
+    # so that is slightly staler brand aggregates, not a broken pass.
+    - cron: "23 */2 * * *"
   workflow_dispatch:
     inputs:
       bucket:
@@ -98,6 +101,28 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Decided BEFORE the sweep so the answer exists even if the sweep dies -- the
+      # refresh below runs on `always()` and would otherwise have nothing to read.
+      - name: Decide whether to refresh the whole pool
+        id: gate
+        run: |
+          # pool_refresh reads the ENTIRE pool, not just the bucket that was swept, so
+          # its cost scales with how often this workflow runs rather than with bucket
+          # size. The sweep went to 12 runs a day; the refresh stays at 4, which is what
+          # it was when the workflow ran 4 times a day. Prices are no staler than before,
+          # and the extra sweep frequency is close to free.
+          #
+          # Crons fire on even hours, so hours divisible by 6 are 00, 06, 12 and 18.
+          # 10# forces base 10: "08" and "09" are invalid octal and would error.
+          h=$(date -u +%H)
+          if [ "${{ github.event_name }}" != "schedule" ] || [ $((10#$h % 6)) -eq 0 ]; then
+            echo "refresh=true" >> "$GITHUB_OUTPUT"
+            echo "Refreshing the whole pool on this run (hour ${h} UTC)."
+          else
+            echo "refresh=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Sweep only — the whole-pool refresh runs at 00/06/12/18 UTC."
+          fi
+
       - name: Sweep this rotation bucket
         env:
           LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
@@ -118,11 +143,11 @@ jobs:
             /usr/bin/time -v python3 -u loppan/sweep_pool.py
           fi
 
-      # Runs even if the sweep failed: the pool still holds three other buckets whose
+      # Runs even if the sweep failed: the pool still holds every other bucket, whose
       # prices and liveness are worth keeping current, and a stale price is a worse
       # lie than a missing bucket.
       - name: Refresh price and liveness across the whole pool
-        if: always()
+        if: always() && steps.gate.outputs.refresh == 'true'
         env:
           LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
         run: /usr/bin/time -v python3 -u loppan/pool_refresh.py
