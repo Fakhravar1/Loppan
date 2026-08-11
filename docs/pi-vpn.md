@@ -146,6 +146,35 @@ Memory after the client was removed: **392 MB available of 899 MB**, no new daem
 
 ## 6. When it breaks
 
+### The tunnel is monitored now (2026-08-11)
+
+It was not before. Both Healthchecks crons tested only that a **runner service** was
+active, which says nothing about the tunnel — so a dead tunnel with a live runner raised
+no alert at all, and you found out by reading a failed workflow log. §7 listed that as a
+known weakness; this closes it.
+
+`/usr/local/sbin/loppan-tunnel-ok` (source: `deploy/pi-vpn/loppan-tunnel-ok`) exits 0
+only if `wg` reports a handshake newer than 300 s, and the Loppan ping is gated on it:
+
+```
+runner active  &&  tunnel healthy  →  ping
+```
+
+⚠️ **This changes what an existing alert means.** A `qvitta-pi-loppan-runner is DOWN`
+email no longer implies the runner is down — it now means *the runner or the tunnel*.
+Check both:
+
+```bash
+systemctl is-active actions.runner.Fakhravar1-Loppan.qvitta-pi.service
+sudo /usr/local/sbin/loppan-tunnel-ok && echo "tunnel ok" || echo "tunnel is the problem"
+```
+
+The check lives in **root's** crontab, not `arian`'s, because `ip netns exec` needs
+root; the Qvitta ping is untouched in the user crontab. `MAX_AGE`, `IFACE` and `NETNS`
+are overridable so the gate can be tested without tearing the tunnel down — verified
+2026-08-11 against a healthy tunnel (pass), a stale handshake, a missing interface and a
+missing namespace (all three correctly refuse to ping).
+
 **Symptom: the Loppan runner is offline and workflows queue.**
 
 That is the designed failure. `track.yml`'s `route` job probes runner status before
@@ -184,9 +213,18 @@ The runner returns to the host namespace and the crawl leaves from home again.
 
 ## 7. Known weaknesses, recorded rather than hidden
 
-- **The NordLynx key can be rotated by NordVPN.** Nothing here notices until a pass
-  fails with no handshake. If that happens more than once, the fix is a scheduled
-  `set-key`, not a longer troubleshooting session.
+- **The NordLynx key can be rotated by NordVPN.** Nothing *auto-recovers* from it — see
+  the monitoring note below for how you now find out. If it happens more than once, the
+  fix is a scheduled `set-key`, not a longer troubleshooting session.
+
+- **What recovers by itself, and what does not.** The peer carries
+  `persistent keepalive: every 25 seconds`, so a transient blip, a router reboot or a
+  NAT timeout re-handshakes on its own with no intervention. What does *not* recover:
+  the unit is `Type=oneshot` with `RemainAfterExit=yes` and **no `Restart=`**, so if the
+  namespace is torn down systemd still reports it active and never rebuilds it; the
+  endpoint is fixed at namespace start, so a retired server is retried forever until
+  `systemctl restart loppan-netns` picks a fresh one; and a rotated key fails handshakes
+  permanently until `set-key` is re-run.
 - **The endpoint is chosen at namespace start, not per request.** A server going away
   mid-pass means a failed pass, recovered on the next start.
 - **Traffic still traverses the home internet connection.** The tunnel hides the

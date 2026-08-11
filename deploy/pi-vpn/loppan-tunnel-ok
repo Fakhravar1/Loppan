@@ -1,0 +1,34 @@
+#!/bin/sh
+# Exit 0 only if the loppan tunnel is actually carrying traffic.
+#
+# The two Healthchecks crons test that a RUNNER SERVICE is active, which says nothing
+# about the tunnel. A dead tunnel with a live runner raised no alert at all: jobs simply
+# failed, and you found out by reading a workflow log. docs/pi-vpn.md §7 listed that as a
+# known weakness ("Nothing here notices until a pass fails with no handshake").
+#
+# Gating the existing Loppan ping on this closes it without needing a second check to be
+# created: the runner ping now means "runner up AND tunnel up", so a dead tunnel stops
+# the pings and the existing `qvitta-pi-loppan-runner is DOWN` alert fires. Note the
+# consequence when you get that email -- it no longer means only the runner.
+#
+# Root, because `ip netns exec` needs it. Lives in root's crontab for the same reason.
+#
+# 300 s rather than something tighter: WireGuard rehandshakes about every 120 s when
+# traffic is flowing and can sit quiet in between, so a shorter window would alert on an
+# idle tunnel that is perfectly healthy.
+#
+# Both are overridable so the gate can be tested without tearing the tunnel down. A
+# first attempt at a negative test passed a stale MAX_AGE in the environment against an
+# unconditional assignment here, "proved" the check was broken, and was wrong.
+MAX_AGE=${MAX_AGE:-300}
+IFACE=${IFACE:-wg-loppan}
+NETNS=${NETNS:-loppan}
+
+hs=$(ip netns exec "$NETNS" wg show "$IFACE" latest-handshakes 2>/dev/null | awk '{print $2; exit}')
+
+# No interface, no peer, or a peer that has never completed a handshake.
+[ -n "$hs" ] || exit 1
+[ "$hs" -gt 0 ] || exit 1
+
+age=$(( $(date +%s) - hs ))
+[ "$age" -lt "$MAX_AGE" ]
