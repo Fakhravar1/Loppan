@@ -58,11 +58,20 @@ MIN_PRICE_KR = 200      # the shortlist floor; below it the peer signal inverts
 MIN_BRAND_ITEMS = 8     # a group needs 8 to exist, so thinner brands cannot produce one
 PER_SHAPE = 1000        # Algolia's hard ceiling per request
 
-# Raw hits held before they are projected into staging rows and freed. Sized well above
-# MIN_BRAND_ITEMS so a thin brand is still intact in the buffer when it is skipped --
-# that is what keeps `_prepare` from creating brand and lookup rows for brands the
-# sweep then discards. 500 hits is ~5 MB at ~10.7 KB a hit.
-FLUSH_EVERY = 500
+# Raw hits held before they are projected into staging rows, upserted, and freed. Two
+# things pin this number:
+#
+#   - It must sit well above MIN_BRAND_ITEMS, so a thin brand is still intact in the
+#     buffer when it is skipped. That is what keeps `_prepare` from creating brand and
+#     lookup rows for brands the sweep then discards.
+#   - `db.BATCH` is the size db.upsert already splits its HTTP requests into, so
+#     flushing at exactly that size costs the SAME number of round trips as holding a
+#     whole brand and writing it in one call. The buffering bought nothing and cost
+#     ~196 MB on the largest brands -- see docs/pi-runner.md.
+#
+# 500 hits is ~5 MB at ~10.7 KB a hit, and the projected rows behind them are dropped
+# as soon as they are written, so peak RSS is flat in the size of the brand.
+FLUSH_EVERY = db.BATCH
 
 # Columns sweep_staging accepts. row_of() builds an `items` row, which is a superset.
 STAGING_COLS = {
@@ -207,7 +216,8 @@ def sweep(bucket: int, dry: bool) -> int:
         # be freed as soon as it has been projected into its ~1 KB staging row.
         seen: set[str] = set()
         buf: list[dict] = []      # raw hits awaiting projection
-        rows: list[dict] = []     # projected staging rows
+        rows: list[dict] = []     # projected staging rows awaiting upsert
+        written = 0               # rows already upserted for THIS brand
 
         def project() -> None:
             """Turn buffered hits into staging rows and drop the hits."""
@@ -222,6 +232,15 @@ def sweep(bucket: int, dry: bool) -> int:
                 rows.append(row)
             buf.clear()
 
+        def flush() -> None:
+            """Upsert the projected rows and drop them."""
+            nonlocal written
+            if not rows:
+                return
+            db.upsert("sweep_staging", rows, "item_id")
+            written += len(rows)
+            rows.clear()
+
         def take(hits: list[dict]) -> None:
             for h in hits:
                 oid = h["objectID"]
@@ -229,23 +248,35 @@ def sweep(bucket: int, dry: bool) -> int:
                     continue
                 seen.add(oid)
                 buf.append(h)
-            # Flushing on a threshold rather than per slice is what keeps `_prepare`
-            # off thin brands: a brand under the flush mark is still whole in `buf`
-            # when the skip below decides, so it never creates a brand or lookup row.
-            if len(buf) >= FLUSH_EVERY:
-                project()
+                # Checked per hit, not once per slice. A slice can carry SHAPE_CEILING
+                # hits, so testing it only after the loop let `buf` reach ~2,500 and
+                # put 1,313 rows in a single upsert -- the bound has to be enforced
+                # where the growth happens.
+                #
+                # Flushing on a threshold rather than per slice is also what keeps
+                # `_prepare` off thin brands: a brand under the flush mark is still
+                # whole in `buf` when the skip below decides, so it never creates a
+                # brand or lookup row.
+                if len(buf) >= FLUSH_EVERY:
+                    project()
+                    flush()
 
         for _demo, ff in shapes:
             _walk_shape(ff, brand, MIN_PRICE_KR, None, take)
 
         # A brand too thin to form a group of 8 cannot produce a peer comparison at any
         # level we use, so staging it would only cost a round trip.
+        #
+        # Safe to ask this after `take` may already have flushed, because a flush needs
+        # FLUSH_EVERY hits and that is far above MIN_BRAND_ITEMS: any brand that has
+        # written a row has already earned its place many times over. A brand that gets
+        # here unflushed is still whole in `buf` and leaves without touching the table.
         if len(seen) < MIN_BRAND_ITEMS:
             continue
 
         project()
-        db.upsert("sweep_staging", rows, "item_id")
-        staged += len(rows)
+        flush()
+        staged += written
         seen_brands += 1
         # flush=True because this runs for ~20 minutes and Python buffers stdout when
         # it is not a terminal — under nohup, a CI log or a background shell the
