@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import http.client
+import io
 import json
 import sys
 import threading
@@ -85,29 +86,90 @@ def _throttle() -> None:
         _last_call = time.time()
 
 
+HOST = f"{APP_ID}-dsn.algolia.net"
+
+_conn_local = threading.local()
+
+
+def _connection() -> tuple[http.client.HTTPSConnection, bool]:
+    """This thread's HTTPS connection, created on first use.
+
+    Thread-local rather than shared: `http.client` connections are not thread-safe and
+    `get_objects_parallel` runs eight at once.
+
+    Also returns whether the connection is FRESH, because the two failure modes deserve
+    different treatment. A reused connection that the server has since dropped is
+    routine — Algolia closes idle keep-alives — and should be retried immediately. A
+    brand-new connection that fails is a real problem and should back off.
+    """
+    conn = getattr(_conn_local, "conn", None)
+    if conn is not None:
+        return conn, False
+    conn = http.client.HTTPSConnection(HOST, timeout=30)
+    _conn_local.conn = conn
+    return conn, True
+
+
+def _drop_connection() -> None:
+    conn = getattr(_conn_local, "conn", None)
+    _conn_local.conn = None
+    if conn is not None:
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+
 def _post(path: str, body: dict) -> dict:
-    req = urllib.request.Request(
-        f"https://{APP_ID}-dsn.algolia.net/1/indexes/{path}",
-        data=json.dumps(body).encode(),
-        headers={
-            "X-Algolia-API-Key": SEARCH_KEY,
-            "X-Algolia-Application-Id": APP_ID,
-            "Content-Type": "application/json",
-        },
-    )
+    """POST to Algolia, reusing this thread's connection.
+
+    Reuse is not a micro-optimisation. `urlopen` built a fresh TLS connection for every
+    single request, and one pool sweep makes thousands across brands, size shapes and
+    the price-split recursion. OpenSSL's per-connection buffers come from glibc malloc,
+    which holds freed heap once fragmented — so a pass sat at ~264 MB RSS while the
+    Python side of that same pass peaked at 16 MB and retained nothing (measured
+    2026-08-11; docs/pi-runner.md). It also drops a TLS handshake per request, so this
+    is faster as well as smaller.
+
+    The body is read in full on every path, including errors. That is what makes the
+    connection reusable — an unread response leaves bytes in the socket and the next
+    request would read them as its own reply.
+    """
+    payload = json.dumps(body).encode()
+    headers = {
+        "X-Algolia-API-Key": SEARCH_KEY,
+        "X-Algolia-Application-Id": APP_ID,
+        "Content-Type": "application/json",
+    }
+
     for attempt in range(RETRIES):
         _throttle()
+        conn, fresh = _connection()
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.load(resp)
-        except urllib.error.HTTPError:
-            raise
-        except TRANSIENT as exc:
+            conn.request("POST", f"/1/indexes/{path}", body=payload, headers=headers)
+            resp = conn.getresponse()
+            data = resp.read()
+        except (*TRANSIENT, http.client.HTTPException) as exc:
+            # HTTPException covers the stale-connection family that urlopen never
+            # produced because it never reused anything: CannotSendRequest,
+            # ResponseNotReady, BadStatusLine.
+            _drop_connection()
             if attempt == RETRIES - 1:
                 raise
-            wait = BACKOFF_S * (2 ** attempt)
-            print(f"  {type(exc).__name__} on {path}; retrying in {wait}s", file=sys.stderr)
-            time.sleep(wait)
+            if fresh:
+                wait = BACKOFF_S * (2 ** attempt)
+                print(f"  {type(exc).__name__} on {path}; retrying in {wait}s",
+                      file=sys.stderr)
+                time.sleep(wait)
+            continue
+
+        if resp.status >= 400:
+            # Raised as HTTPError so callers keep the type they already handle, and
+            # with the body attached so `.read()` on it still works.
+            _drop_connection()
+            raise urllib.error.HTTPError(f"https://{HOST}/1/indexes/{path}", resp.status,
+                                         resp.reason, resp.headers, io.BytesIO(data))
+        return json.loads(data)
 
 
 def search(filters: str = "", facet_filters: list | None = None,
