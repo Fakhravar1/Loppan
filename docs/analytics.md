@@ -32,6 +32,23 @@ yesterday's shelf; and the freeze reads outcomes `track.py` has only just writte
 All three **replace their own day's rows** rather than appending. Re-running after a
 failure is safe and is the intended response to a timeout.
 
+The three are also **independent enough to carry on past each other's failures** —
+losing the brand snapshot is no reason to also lose the predictors — and `analytics.py`
+catches per-step failures to make that true.
+
+⚠️ **That only worked for HTTP errors until 2026-08-11.** `db.rpc` wrapped
+`urllib.error.HTTPError` into `RuntimeError`, which is what `analytics.py` catches, but
+let every *connection-level* failure through as its own type — `RemoteDisconnected`,
+`ConnectionResetError`, socket timeouts. Those escaped the handler and killed the whole
+script at whichever step hit one. A dropped connection on step 1 on 2026-08-10 and again
+on 08-11 therefore cost `predictor_daily` and `brand_daily` for both days, which cannot
+be backfilled — see §5.4. `db.rpc` now normalises connection failures to `RuntimeError`
+too, so a blip costs one step instead of three.
+
+Note the wording of that error: it says the *call* failed, not that the work did not
+happen. A long RPC usually commits server-side even when the socket dies — which is why
+`peer_prices` carries a 2026-08-11 stamp from a pass that reported failure.
+
 A fourth step runs after these three, as its own script rather than part of
 `analytics.py`, because it is the only one that makes network requests:
 
@@ -245,7 +262,7 @@ rather than reporting zero change. `days_apart` reports the real gap, which drif
 
 ---
 
-## 5. Three ways this data will lie to you
+## 5. Four ways this data will lie to you
 
 ### 5.1 A change and a disappearance cannot be seen in the same pass
 
@@ -291,6 +308,31 @@ The 2,819 rows with `stratum = 'L'` are the migrated Typesense-era sample. They 
 resolved and read 86% sold, which is the survivor artefact `overview.md` §5 warns about,
 not a sell-through rate. **Every function here filters to `stratum in ('A','B','N')`.** Any
 new query must do the same.
+
+### 5.4 The series has a hole at 2026-08-10 and 2026-08-11
+
+`predictor_daily` and `brand_daily` have **no rows for either day**. The last snapshot
+before the gap is 2026-08-09.
+
+This is a gap, not a zero, and the difference matters for every comparison in §4's
+Trends and §3's board: a query that diffs "the last two snapshots" silently spans three
+days across this hole, and any per-day rate computed from it is wrong by a factor of
+three. Filter on `as_of` explicitly rather than trusting adjacency.
+
+**It cannot be backfilled.** Both tables are snapshots of the *live* market on the day
+they run — live listing counts, current asking prices, attention. Re-running
+`analytics.py` now stamps today's market with today's date; it cannot reconstruct what
+the shelf looked like on 10 August. The two days are simply gone.
+
+Cause: the Raspberry Pi runner livelocked from 2026-08-10 (docs/pi-runner.md, "The
+second livelock"), and a dropped connection aborted `analytics.py` before the two
+snapshot steps ran — see §1. Both are fixed; the hole stays.
+
+What is *not* affected, and it is the part that matters: **`cohort_checks` is unbroken**,
+with an observation every day through the incident. The forward cohort is the project's
+one live experiment and it runs on hosted runners, which is exactly why it survived a
+dead Pi. `enrol` and `cohort check` staying hosted is a deliberate choice — see
+docs/pi-runner.md — and this is the incident that justifies it.
 
 ---
 

@@ -13,13 +13,17 @@ complete while it is in `sweep_staging`. The cheap tail is copied into the pool 
 rest is thrown away.
 
 That is what makes the full market affordable. Storing every item needed to compute the
-comparison would be ~560 MB; holding a quarter of it transiently is ~146 MB, and the
-pool it leaves behind is a fraction of that.
+comparison would be ~560 MB; holding a twelfth of it transiently is ~61 MB of staging,
+and the pool it leaves behind is a fraction of that.
 
-Buckets come from `crc32(brand) % 4`. No mapping table to maintain, new brands assign
-themselves, and it splits the target market 24.4 / 24.4 / 24.7 / 26.6 % — measured, not
-assumed. `public.crc32()` in Postgres reproduces `zlib.crc32` exactly (verified on ASCII
-and UTF-8 brand names), so the two sides can never drift apart.
+Buckets come from `crc32(brand) % BUCKETS`. No mapping table to maintain, and new brands
+assign themselves. `public.crc32()` in Postgres reproduces `zlib.crc32` exactly (verified
+on ASCII and UTF-8 brand names), so the two sides can never drift apart.
+
+Python-side memory is bounded independently of the bucket: hits are projected into
+staging rows and released as they arrive, so peak RSS is flat in the size of the brand
+rather than proportional to it. See `_walk_shape`, and docs/pi-runner.md for the
+livelock that made it necessary.
 
 ## What it does not touch
 
@@ -53,6 +57,12 @@ BUCKETS = 12
 MIN_PRICE_KR = 200      # the shortlist floor; below it the peer signal inverts
 MIN_BRAND_ITEMS = 8     # a group needs 8 to exist, so thinner brands cannot produce one
 PER_SHAPE = 1000        # Algolia's hard ceiling per request
+
+# Raw hits held before they are projected into staging rows and freed. Sized well above
+# MIN_BRAND_ITEMS so a thin brand is still intact in the buffer when it is skipped --
+# that is what keeps `_prepare` from creating brand and lookup rows for brands the
+# sweep then discards. 500 hits is ~5 MB at ~10.7 KB a hit.
+FLUSH_EVERY = 500
 
 # Columns sweep_staging accepts. row_of() builds an `items` row, which is a superset.
 STAGING_COLS = {
@@ -103,9 +113,21 @@ CEILING_KR = 20000   # treated as "no upper bound" when splitting; nothing here 
 MAX_SPLITS = 8       # 2^8 slices is far past the point any brand still overflows
 
 
-def _fetch_shape(ff: list[list[str]], brand: str, lo_kr: int, hi_kr: int | None,
-                 depth: int = 0) -> list[dict]:
+def _walk_shape(ff: list[list[str]], brand: str, lo_kr: int, hi_kr: int | None,
+                emit, depth: int = 0) -> None:
     """Every listing for one brand in one size shape, splitting on price when capped.
+
+    Hands each COMPLETE slice to `emit` rather than returning one list for the whole
+    brand. A raw Algolia hit is ~10.7 KB, and the recursive split means a big brand --
+    Zara alone has ~21,000 target-size items -- would otherwise materialise every one
+    of them at once, ~225 MB, before a single row was written. That is the same
+    unbounded working set `fa70afa` took out of track.py, and holding it inside a
+    240 MB cgroup is what livelocked the Pi on 2026-08-10: see docs/pi-runner.md.
+    Emitting per slice holds at most one slice, so peak is flat in the brand's size.
+
+    A CAPPED slice is still discarded rather than emitted. That invariant is the whole
+    point of the recursion and must survive the streaming: a biased 2,000 must never
+    reach the peer groups.
 
     The cap is the reason this is recursive rather than a loop. Ten brands market-wide
     hold more than ~6,000 target-size items -- Zara alone has ~21,000 -- and for those a
@@ -139,16 +161,20 @@ def _fetch_shape(ff: list[list[str]], brand: str, lo_kr: int, hi_kr: int | None,
         page += 1
 
     if len(out) < SHAPE_CEILING or depth >= MAX_SPLITS:
-        return out
+        emit(out)
+        return
 
     # Capped. Throw this slice away and re-fetch it in halves -- keeping it would mean
     # mixing a biased 2,000 with the complete halves that follow.
     hi = hi_kr if hi_kr is not None else CEILING_KR
     if hi - lo_kr <= 1:
-        return out                      # cannot split a 1 kr range any further
+        emit(out)                       # cannot split a 1 kr range any further
+        return
+    out = []                            # release the biased slice BEFORE recursing,
+                                        # or every frame on the stack keeps its own
     mid = lo_kr + (hi - lo_kr) // 2
-    return (_fetch_shape(ff, brand, lo_kr, mid, depth + 1)
-            + _fetch_shape(ff, brand, mid, hi_kr, depth + 1))
+    _walk_shape(ff, brand, lo_kr, mid, emit, depth + 1)
+    _walk_shape(ff, brand, mid, hi_kr, emit, depth + 1)
 
 
 def sweep(bucket: int, dry: bool) -> int:
@@ -168,33 +194,56 @@ def sweep(bucket: int, dry: bool) -> int:
     staged = seen_brands = 0
 
     for i, brand in enumerate(brands, 1):
-        # Keyed by objectID, not a list, because the same item comes back more than
-        # once. `api-notes.md` records that walking a live index returns some rows
-        # twice and skips others, and the price fan-out multiplies the number of
-        # paginated requests, so it happens far more often than it used to.
+        # `seen` is a set of objectIDs, not a dict of hits, because the same item comes
+        # back more than once. `api-notes.md` records that walking a live index returns
+        # some rows twice and skips others, and the price fan-out multiplies the number
+        # of paginated requests, so it happens far more often than it used to.
         #
         # PostgREST does not tolerate it: two rows with the same id in one upsert give
         # "ON CONFLICT DO UPDATE command cannot affect row a second time" and the whole
         # batch fails. That is how this was found.
-        found: dict[str, dict] = {}
+        #
+        # Holding only the id keeps the dedup while letting the ~10.7 KB hit behind it
+        # be freed as soon as it has been projected into its ~1 KB staging row.
+        seen: set[str] = set()
+        buf: list[dict] = []      # raw hits awaiting projection
+        rows: list[dict] = []     # projected staging rows
+
+        def project() -> None:
+            """Turn buffered hits into staging rows and drop the hits."""
+            if not buf:
+                return
+            enrol._prepare(buf)
+            for h in buf:
+                row = {k: v for k, v in enrol.row_of(h, "P", 1.0, today).items()
+                       if k in STAGING_COLS}
+                row["bucket"] = bucket
+                row["image_paths"] = search.image_paths(h.get("images")) or None
+                rows.append(row)
+            buf.clear()
+
+        def take(hits: list[dict]) -> None:
+            for h in hits:
+                oid = h["objectID"]
+                if oid in seen:
+                    continue
+                seen.add(oid)
+                buf.append(h)
+            # Flushing on a threshold rather than per slice is what keeps `_prepare`
+            # off thin brands: a brand under the flush mark is still whole in `buf`
+            # when the skip below decides, so it never creates a brand or lookup row.
+            if len(buf) >= FLUSH_EVERY:
+                project()
+
         for _demo, ff in shapes:
-            for h in _fetch_shape(ff, brand, MIN_PRICE_KR, None):
-                found[h["objectID"]] = h
-        hits = list(found.values())
+            _walk_shape(ff, brand, MIN_PRICE_KR, None, take)
 
         # A brand too thin to form a group of 8 cannot produce a peer comparison at any
         # level we use, so staging it would only cost a round trip.
-        if len(hits) < MIN_BRAND_ITEMS:
+        if len(seen) < MIN_BRAND_ITEMS:
             continue
 
-        enrol._prepare(hits)
-        rows = []
-        for h in hits:
-            row = {k: v for k, v in enrol.row_of(h, "P", 1.0, today).items() if k in STAGING_COLS}
-            row["bucket"] = bucket
-            row["image_paths"] = search.image_paths(h.get("images")) or None
-            rows.append(row)
-
+        project()
         db.upsert("sweep_staging", rows, "item_id")
         staged += len(rows)
         seen_brands += 1

@@ -14,6 +14,7 @@ can read and write nothing.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.error
@@ -288,6 +289,20 @@ def rpc(name: str, params: dict | None = None, timeout: int = RPC_TIMEOUT):
             return json.loads(body) if body else None
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"rpc {name}: HTTP {exc.code} — {exc.read().decode()[:300]}") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        # Everything that is not an HTTP *response*: a dropped socket, a refused or
+        # reset connection, DNS failure, or the socket timeout above. These used to
+        # escape as their own types, which meant callers that deliberately catch
+        # RuntimeError to carry on -- analytics.py runs three independent snapshots --
+        # aborted on the first one instead. A RemoteDisconnected on refresh_peer_prices
+        # cost the brand and predictor snapshots for 2026-08-10 and 08-11 that way.
+        #
+        # Note the wording: this says the CALL failed, not that the work did not
+        # happen. Per the docstring above, the statement usually keeps running and
+        # commits server-side, so the response to one of these is to re-run, not to
+        # assume the day is missing.
+        raise RuntimeError(f"rpc {name}: {type(exc).__name__} — {exc} "
+                           f"(the call failed; the statement may still have committed)") from exc
     except (TimeoutError, urllib.error.URLError) as exc:
         raise RuntimeError(
             f"rpc {name}: no response within {timeout}s. The statement may still be "

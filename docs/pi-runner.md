@@ -124,6 +124,15 @@ pages held in the same RAM the kernel is trying to free, so reclaim under pressu
 burns CPU and relieves nothing. That is the livelock. The line that converts "the
 Pi died" into "the job failed" is `MemorySwapMax=0`.
 
+> ⚠️ **That last sentence was wrong, and it cost the box a second livelock on
+> 2026-08-10.** `MemorySwapMax=0` does not convert a runaway into a clean kill. It
+> removes the only *cheap* thing reclaim can do, so all the pressure lands on page
+> cache instead — which is evicted and immediately faulted back from the SD card,
+> forever, without ever reaching `MemoryMax`. No OOM kill, no failed job, just a
+> machine that stops making progress. **See "The second livelock" below**, which
+> also carries the corrected sizing. The values in the block that follows are
+> superseded.
+
 Applied as a systemd drop-in at
 `/etc/systemd/system/actions.runner.Fakhravar1-Loppan.qvitta-pi.service.d/memory.conf`:
 
@@ -187,6 +196,138 @@ The cgroup recorded 355 `high` events (reclaim at the throttle point) and **zero
 is exactly what `MemoryHigh` is for: throttle on cheap memory before killing on
 expensive memory.
 
+## The second livelock — 2026-08-10/11
+
+The box went down again on 2026-08-10, was power-cycled the next morning, and was
+livelocking again by 08:16. Different cause from 2026-08-07, and the more instructive
+one, because everything above was built specifically to prevent it and did not.
+
+### What set it off
+
+Two things landed on 2026-08-10 that, together, put a workload on the Pi that had
+never run there:
+
+1. `RUNNER_STATUS_TOKEN` was created, so the `route` job stopped defaulting to hosted
+   and actually began sending jobs to `qvitta-pi` — the "one manual step outstanding"
+   above.
+2. `pool.yml` / `sweep_pool.py` was added. It is a **different and much larger
+   workload than `track.py`**, and the cgroup cap it inherited had been sized against
+   `track.py` alone.
+
+Every job that routed to the Pi from that point failed. Everything still hosted —
+`enrol`, `cohort check` — kept succeeding, which is the signature worth remembering:
+**if the hosted jobs are green and only the self-hosted ones fail, suspect the box,
+not the code.**
+
+### Why the cap was too small
+
+It was sized as "~66 MB runner listener (idle) + 84 MB job + headroom". Both terms
+were wrong:
+
+| In the cgroup while a job runs | RSS |
+|---|---|
+| `Runner.Listener` | 71 MB |
+| `Runner.Worker` — **exists only while a job runs, and was never counted** | 57 MB |
+| `python3 sweep_pool.py` | 120 MB and climbing |
+| bash + node | ~9 MB |
+| **total** | **~257 MB against a 240 MB `MemoryHigh`** |
+
+The listener was measured *idle*, which is precisely when the worker does not exist.
+Any sizing that counts only the idle listener is short by ~57 MB on every real run.
+
+### The failure mode: refault livelock, not OOM
+
+Measured on the live cgroup, 2026-08-11:
+
+| | Loppan runner | Qvitta runner (healthy, for contrast) |
+|---|---|---|
+| `memory.events` `high` | **8,270,730** | 10,426 |
+| `memory.pressure` full avg10 | **95.6 %** | 0.00 % |
+| `workingset_refault_file` | **38,106,577** | 887,583 |
+| `pgmajfault` | **1,225,952** | 103,804 |
+| `oom_kill` | **0** | 0 |
+
+Box-wide: load average **60**, `/proc/pressure/io some` 98 %, and `Dirty` at 36 kB —
+near-zero dirty pages with saturated I/O is the fingerprint. Nothing was being
+*written*; the same pages were being read back over and over.
+
+The mechanism, and the thing the earlier reasoning missed:
+
+- `MemoryHigh` (240 M) throttles and reclaims **before** `MemoryMax` (300 M) is ever
+  reached, so the hard limit never fires and **nothing is ever killed**.
+- `MemorySwapMax=0` means anonymous pages cannot be reclaimed *at all*.
+- So every byte of reclaim must come from file-backed pages — the executables, the
+  shared libraries, the Python stdlib — which are needed again immediately and fault
+  straight back in off the SD card.
+- Reclaim therefore always "succeeds", the cgroup sits permanently at its throttle
+  point, and the job makes no progress. The runner took **8–9 minutes to write a
+  single constant log line**; a job GitHub had already failed at 11 minutes was still
+  burning the box three hours later.
+
+**`MemorySwapMax=0` is not a safety belt. It is the thing that removed the cheap
+reclaim option and forced the expensive one.** The sibling unit, with a *bounded*
+192 M, never had this problem.
+
+Note what did work: the blast radius stayed inside the cgroup. Qvitta held at 0.00 %
+memory pressure and its runner never missed a beat. The isolation design is sound —
+only the sizing and the swap setting were wrong.
+
+### The fix
+
+**Bound the job, then size the cap to it** — the same order `fa70afa` used for
+`track.py`:
+
+- `sweep_pool.py` no longer materialises a brand's hits. `_fetch_shape` returned every
+  raw Algolia hit for a brand in one list — ~10.7 KB a hit, and Zara alone has ~21,000
+  target-size items, so ~225 MB before a single row was written. It is now
+  `_walk_shape`, which hands each *complete* price slice to a callback that projects it
+  into a ~1 KB staging row and drops the hit. Peak is flat in the size of the brand.
+  The invariant that a **capped** slice is discarded rather than emitted is preserved —
+  that is what keeps a biased 2,000 out of the peer groups.
+- `pool.yml` runs under `/usr/bin/time -v` permanently, as `track.yml` already did.
+  This job was unmeasured, which is the only reason it grew past the cap unnoticed.
+
+Corrected drop-in at
+`/etc/systemd/system/actions.runner.Fakhravar1-Loppan.qvitta-pi.service.d/memory.conf`:
+
+```ini
+[Service]
+MemoryAccounting=yes
+MemoryHigh=300M
+MemoryMax=400M
+MemorySwapMax=128M
+```
+
+- **300 M `MemoryHigh`** — above the ~203 MB a real pass now needs, with enough room
+  that the cgroup does not live at its throttle point. Sitting *at* `MemoryHigh` is
+  the failure, not a safe steady state.
+- **400 M `MemoryMax`** — the runaway stopper, unchanged in purpose.
+- **128 M `MemorySwapMax`, not 0** — the correction. zram compresses ~4.5:1 here, so
+  this costs ~28 MB of real RAM and gives reclaim somewhere cheap to go. Bounded, not
+  unbounded: unbounded zram reclaim is what caused the *first* livelock.
+
+`MemoryHigh` totals 300 + 450 = 750 MB of an 899 MB box, leaving ~150 MB for the OS,
+and both workloads sit well under their throttle points in normal use.
+
+### If you are reading this because the box is down again
+
+```bash
+# Is it thrashing rather than busy? Near-100% "full" with no dirty pages is the tell.
+cat /proc/pressure/memory /proc/pressure/io; grep Dirty /proc/meminfo
+cg=/sys/fs/cgroup$(systemctl show actions.runner.Fakhravar1-Loppan.qvitta-pi.service -p ControlGroup --value)
+cat $cg/memory.events; grep -E "workingset_refault_file|pgmajfault" $cg/memory.stat
+```
+
+A large and *growing* `high` count with `oom_kill 0` means a refault livelock, not a
+runaway. Stopping the runner service releases it — and because a stopped runner routes
+the next pass hosted, that is a safe thing to do while you work out why.
+
+⚠️ **Do not "clean up" with `systemctl revert`.** It removes *every* drop-in for the
+unit, including this persistent `memory.conf`, leaving the runner uncapped — which is
+the one state guaranteed to take the whole box down. Use
+`systemctl set-property --runtime` for a temporary change and delete the runtime file
+to undo it.
+
 ## The sibling's runner is capped too (2026-08-08)
 
 Symmetry, not paranoia: `track` proved an unbounded job on this box takes the whole
@@ -230,10 +371,16 @@ Verified against a real build rather than assumed: peak anon 206 MB, `high` 104
 
 ### The two ceilings deliberately oversubscribe the box
 
-Loppan's 300M plus dbt's 600M is 900 MB on an 899 MB machine. That is intentional.
+Loppan's 400M plus dbt's 600M is 1,000 MB on an 899 MB machine. That is intentional.
 `MemoryMax` is a runaway-stopper, not an operating point. What governs steady state
-is the `MemoryHigh` pair — 240M + 450M = 690 MB, leaving ~200 MB for the OS, which
+is the `MemoryHigh` pair — 300M + 450M = 750 MB, leaving ~150 MB for the OS, which
 does fit, and both workloads sit well below their throttle points in normal use.
+
+⚠️ **"Below their throttle points" is load-bearing, not a nicety.** A cgroup parked
+*at* `MemoryHigh` does not degrade gently — it reclaims continuously, and if it has no
+swap it reclaims page cache it needs back immediately. That is the 2026-08-10 livelock.
+Headroom under `MemoryHigh` is the thing being bought here; `MemoryMax` only catches
+what headroom fails to.
 
 If both ever hit their hard ceiling simultaneously, the global OOM killer takes a
 process and a job dies. That is the outcome we want, and it is precisely what was
@@ -277,10 +424,18 @@ happened to be over the hosted ceiling too. That is fixed — 84 MB, flat as the
 sample grows, and now printed on every run.
 
 The rest was about making sure that when something on this box misbehaves it fails
-as a job instead of as a machine. That is now true and demonstrated: the cgroup is
-capped, swap is denied to it, an overrun is a one-second scoped OOM kill, a killed
-pass resumes from its checkpoint, and a dead Pi routes to hosted instead of queueing
-into silence. A full pass has run there end to end — 7:46, 57 MB, no kills.
+as a job instead of as a machine. That is *mostly* true: the cgroup is capped, a
+killed pass resumes from its checkpoint, and a dead Pi routes to hosted instead of
+queueing into silence. A full pass has run there end to end — 7:46, 57 MB, no kills.
+
+But it was not as true as this document claimed, and 2026-08-10 proved it. "Swap is
+denied to it" was listed here as a safety property when it was the opposite: denying
+swap is what turned an over-cap job into an unkillable refault livelock instead of a
+clean kill. A cap protects the box only when the job is bounded *and* reclaim has
+somewhere cheap to go *and* the steady state sits below the throttle point. The
+standing lesson is the same one `track.py` taught and this job had to learn again:
+**measure the job before you size a cap around it, and keep measuring it in the log
+of every run.**
 
 The saving is smaller than the first draft of this document claimed (~400 min/month,
 not ~990) but it is drawn from an account-wide pool that several projects share,

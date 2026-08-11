@@ -107,10 +107,15 @@ jobs:
             echo "::error::LOPPAN_SUPABASE_KEY is not set — nothing could be written."
             exit 1
           fi
+          # Under `time -v` permanently, for the same reason track.py is: the peak RSS
+          # has to be in the log of every pass, or nobody notices it climbing until the
+          # box is on the floor. That is exactly how 2026-08-10 happened -- this job
+          # was never measured, and it outgrew a cgroup cap sized for track.py.
+          # See docs/pi-runner.md, "The second livelock".
           if [ -n "${BUCKET:-}" ]; then
-            python3 -u loppan/sweep_pool.py --bucket "$BUCKET"
+            /usr/bin/time -v python3 -u loppan/sweep_pool.py --bucket "$BUCKET"
           else
-            python3 -u loppan/sweep_pool.py
+            /usr/bin/time -v python3 -u loppan/sweep_pool.py
           fi
 
       # Runs even if the sweep failed: the pool still holds three other buckets whose
@@ -120,4 +125,4 @@ jobs:
         if: always()
         env:
           LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
-        run: python3 -u loppan/pool_refresh.py
+        run: /usr/bin/time -v python3 -u loppan/pool_refresh.py
