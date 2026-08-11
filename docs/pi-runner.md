@@ -286,13 +286,44 @@ only the sizing and the swap setting were wrong.
   the peer groups.
 
   **Measured on the first full pass after the fix (run `31482344537`, bucket 3, 1,547
-  brands, 67,872 items staged): peak RSS 270,236 KB — 264 MB — in 16:25.** Steady state
-  is ~68 MB; the peak is a *sawtooth*, one spike per large brand, because a brand's
-  projected rows are still held until its upsert. So the shape is now flat across the
-  pass rather than growing with it, but the per-brand spike is real and is what the cap
-  must accommodate. An earlier draft of this section guessed ~66 MB from the steady
-  state alone and was wrong by 4x — which is precisely why `time -v` is now mandatory on
-  this job rather than an estimate in a document.
+  brands, 67,872 items staged): peak RSS 270,236 KB — 264 MB — in 16:25.** An earlier
+  draft of this section guessed ~66 MB from the steady state and was wrong by 4x, which
+  is precisely why `time -v` is now mandatory on this job rather than an estimate in a
+  document.
+
+### The remaining 264 MB is NOT per-brand, and is still unexplained
+
+Worth writing down because two plausible explanations have already been tested and
+killed, and the next person will otherwise reach for the same two.
+
+Peak RSS scales with the **total items staged across the whole pass**, not with the
+largest brand in it:
+
+| bucket | items staged | peak RSS | KB per staged item |
+|---|---|---|---|
+| 5 | 40,139 | 145 MB | 3.7 |
+| 4 | 59,774 | 253 MB | 4.3 |
+| 3 | 66,003 | 264 MB | 4.1 |
+
+**Eliminated — chunking the per-brand upsert.** The obvious read of the sawtooth was
+that a brand's projected rows were held until its upsert, so they were changed to flush
+every `db.BATCH` rows (free: `db.upsert` already splits at that size, so the same 42 HTTP
+requests go out either way). Bucket 3 re-run under identical conditions: **270,236 KB
+before, 270,708 KB after — 0.2%.** The bound is real and worth keeping, because a single
+21,000-item brand genuinely would have held 21,000 rows, but it is not the dominant term.
+
+**Eliminated — allocator fragmentation.** Churning 66,000 transient hit-sized dicts
+500 at a time on this box, retaining only the ids, peaks at **21 MB**. CPython returns
+the arenas. This is not obmalloc ratcheting.
+
+**Also checked and clear:** `algolia.search` memoises nothing, and `enrol`'s module-level
+`_lookup` / `_brands` / `_masks` caches are bounded by distinct *values*, not item count.
+
+So something retains ~4 KB per staged item for the length of a pass and has not been
+found yet. **The next step is measurement, not another guess** — run the pass with
+`tracemalloc` snapshotting the top allocations, rather than reasoning about the code.
+Until then the number is known, bounded by the cgroup, and survivable; it is simply not
+understood.
 - `pool.yml` runs under `/usr/bin/time -v` permanently, as `track.yml` already did.
   This job was unmeasured, which is the only reason it grew past the cap unnoticed.
 
@@ -311,12 +342,16 @@ MemorySwapMax=128M
   57 MB worker + ~68 MB job), so the cgroup does not live at its throttle point.
   Sitting *at* `MemoryHigh` is the failure, not a safe steady state.
 - **400 M `MemoryMax`** — the runaway stopper, unchanged in purpose. Note it is *not*
-  above the worst case: a 264 MB per-brand spike on top of 128 MB of runner is ~392 MB,
-  which is inside 400 M but not by much. The first pass rode it out — `high` 536 and
-  flat, `max` 0, `oom_kill` 0 — with reclaim and ~72 MB of zram absorbing the spike,
-  which is exactly the job those two settings exist to do. **If that spike grows, this
-  is where it will bite**, and the fix is to chunk the per-brand upsert rather than to
-  raise the ceiling again.
+  comfortably above the worst case: 264 MB of job on top of 128 MB of runner is ~392 MB,
+  inside 400 M but barely. Four consecutive full passes rode it out — `high` climbing
+  only 536 → 1,801 across all of them, `max` 0, `oom_kill` 0 — with reclaim and ~52–72 MB
+  of zram absorbing the peak, which is exactly the job those two settings exist to do.
+
+  **This is the thinnest margin on the box, and it is load-bearing.** Peak RSS grows
+  with the number of items a bucket stages (see below), so a bucket larger than 3's
+  66,000 will push it. The honest position: the ceiling is holding, the growth term is
+  not yet understood, and the answer if it bites is to find that term — not to raise
+  the ceiling into the space Qvitta needs.
 - **128 M `MemorySwapMax`, not 0** — the correction. zram compresses ~4.5:1 here, so
   this costs ~28 MB of real RAM and gives reclaim somewhere cheap to go. Bounded, not
   unbounded: unbounded zram reclaim is what caused the *first* livelock.
