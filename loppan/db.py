@@ -263,20 +263,24 @@ def count(path: str) -> int:
 def _keepalive(sock) -> None:
     """Keep a long, silent request's TCP flow warm.
 
-    An analytics RPC runs 20–60 s server-side, and for all of that time the flow
-    carries no packets in either direction. Something on the path drops it as idle,
-    and the response then arrives to a closed socket — `RemoteDisconnected`.
+    Cheap insurance against a middlebox dropping an idle flow: an analytics RPC runs
+    for a minute or more with no packets in either direction, and probing every 15 s
+    makes it non-idle. The options after SO_KEEPALIVE are Linux-specific, hence the
+    hasattr guard.
 
-    It is the VPN, on the evidence: `refresh_peer_prices` succeeded on 08-08 and
-    08-09 and has failed on every run since 08-10, which is the day the tunnel went
-    up (docs/pi-vpn.md). A NAT entry on the exit expiring mid-statement fits exactly.
-    WireGuard's own 25 s keepalive holds the *tunnel* open; it does nothing for the
-    TCP flow inside it, which is what is being dropped.
+    ⚠️ **This is not what fixes `refresh_peer_prices`, despite being added for it.**
+    The reasoning at the time was that the tunnel's NAT was expiring the flow, since
+    the RPC succeeded on 08-08 and 08-09 and failed on every run from 08-10, the day
+    the VPN went up. That correlation was a coincidence. Timed directly against the
+    database on 2026-08-11 the function takes **99 s** and scores 647,051 rows, up
+    from the ~56 s recorded on 08-08 — and Supabase's API gateway cuts a request at
+    **60 s**. It crossed that line at about the moment the tunnel appeared.
 
-    Probing every 15 s costs a handful of packets and makes the flow non-idle. The
-    options after SO_KEEPALIVE are Linux-specific, hence the hasattr guard — on a
-    platform without them the keepalive still works, just with the OS default idle
-    time, which is two hours and therefore useless.
+    No client-side setting extends a gateway's request limit, so keepalives cannot
+    help and nor could a longer `timeout` here. The call has to stop needing more than
+    60 s of held-open HTTP: make the statement faster, split it, or run it detached.
+    Kept because it is harmless and genuinely does protect the other long RPCs from
+    idle-flow drops — but do not read its presence as evidence the problem was network.
     """
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
     for opt, value in (("TCP_KEEPIDLE", 15), ("TCP_KEEPINTVL", 15), ("TCP_KEEPCNT", 8)):

@@ -49,6 +49,33 @@ Note the wording of that error: it says the *call* failed, not that the work did
 happen. A long RPC usually commits server-side even when the socket dies — which is why
 `peer_prices` carries a 2026-08-11 stamp from a pass that reported failure.
 
+### ⚠️ `refresh_peer_prices` no longer fits in one HTTP request
+
+**It takes 99 s.** Timed directly against the database on 2026-08-11, scoring 647,051
+rows — up from the ~56 s in the table above, measured 2026-08-08. **Supabase's API
+gateway cuts a request at 60 s**, so the call now fails every single time with
+`RemoteDisconnected`, while the statement runs on and commits regardless.
+
+Two false trails, recorded so they are not walked again. It looked like the VPN, because
+it succeeded on 08-08 and 08-09 and failed on every run from 08-10, the day the tunnel
+went up — pure coincidence, the function crossed 60 s at about that moment. TCP
+keepalives were added on that theory and did not help, and could not have: **no
+client-side setting extends a gateway's request limit**, and neither does raising
+`RPC_TIMEOUT`, which only governs the socket.
+
+It also matters that this is *step 1 of 3*. Each retry leaves a 99 s statement running
+server-side, so re-running `track` while a previous one is still going produces
+`55P03 canceling statement due to lock timeout` on `snapshot_predictors` — a second,
+confusing failure caused entirely by retrying the first.
+
+The fix has to remove the need to hold an HTTP request open for 99 s. In rough order of
+appeal: make the statement faster; split the freeze and the rebuild into two calls, each
+comfortably under 60 s; or run it detached (`pg_cron`) and have `analytics.py` verify the
+outcome rather than await it. Until one of those lands, **the peer freeze must be run by
+hand** — `select public.refresh_peer_prices();` straight against the database, which has
+no gateway in the way — and `track` will keep reporting one failed step of three while
+the other two snapshots complete normally.
+
 A fourth step runs after these three, as its own script rather than part of
 `analytics.py`, because it is the only one that makes network requests:
 
