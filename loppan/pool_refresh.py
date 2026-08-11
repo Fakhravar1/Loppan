@@ -44,6 +44,14 @@ def main() -> None:
     # rank comes along because it is NOT NULL: PostgREST builds a complete insert tuple
     # for an upsert and validates it before resolving the conflict, so omitting it fails
     # the whole batch even though the row already exists and no insert will happen.
+    #
+    # `as_of` is the other NOT NULL column and was missed here until 2026-08-11, so this
+    # script had never once completed: every run died on
+    # `23502 ... Failing row contains (null, <item_id>, 1, ...)`. Nobody saw it because
+    # the sweep step ahead of it was failing first and this one only ever ran as the
+    # `if: always()` tail of an already-broken job. It is supplied in the payload below
+    # rather than selected here, because it must be TODAY rather than whatever the row
+    # currently holds.
     rows = db.query("shortlist_daily?select=item_id,rank,peer_median_kr,price_kr")
     if not rows:
         sys.exit("pool is empty — has a bucket been swept yet?")
@@ -75,6 +83,13 @@ def main() -> None:
             med = row["peer_median_kr"]
             payload.append({
                 "item_id": item_id,
+                # Today, not the sweep date. `as_of` is how current this row's data is,
+                # and price and still_listed below were just re-read. `swept_on` is the
+                # separate column carrying the peer group's vintage, and it is
+                # deliberately NOT touched here -- next_sweep_bucket() rotates on
+                # max(swept_on), so bumping it would make every bucket look freshly
+                # swept and the rotation would stop advancing.
+                "as_of": today,
                 "rank": row["rank"],
                 "price_kr": price_kr,
                 # Recomputed so the headline number matches the price beside it. The

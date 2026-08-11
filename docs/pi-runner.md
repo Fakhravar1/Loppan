@@ -281,9 +281,18 @@ only the sizing and the swap setting were wrong.
   raw Algolia hit for a brand in one list — ~10.7 KB a hit, and Zara alone has ~21,000
   target-size items, so ~225 MB before a single row was written. It is now
   `_walk_shape`, which hands each *complete* price slice to a callback that projects it
-  into a ~1 KB staging row and drops the hit. Peak is flat in the size of the brand.
-  The invariant that a **capped** slice is discarded rather than emitted is preserved —
-  that is what keeps a biased 2,000 out of the peer groups.
+  into a ~1 KB staging row and drops the hit. The invariant that a **capped** slice is
+  discarded rather than emitted is preserved — that is what keeps a biased 2,000 out of
+  the peer groups.
+
+  **Measured on the first full pass after the fix (run `31482344537`, bucket 3, 1,547
+  brands, 67,872 items staged): peak RSS 270,236 KB — 264 MB — in 16:25.** Steady state
+  is ~68 MB; the peak is a *sawtooth*, one spike per large brand, because a brand's
+  projected rows are still held until its upsert. So the shape is now flat across the
+  pass rather than growing with it, but the per-brand spike is real and is what the cap
+  must accommodate. An earlier draft of this section guessed ~66 MB from the steady
+  state alone and was wrong by 4x — which is precisely why `time -v` is now mandatory on
+  this job rather than an estimate in a document.
 - `pool.yml` runs under `/usr/bin/time -v` permanently, as `track.yml` already did.
   This job was unmeasured, which is the only reason it grew past the cap unnoticed.
 
@@ -298,10 +307,16 @@ MemoryMax=400M
 MemorySwapMax=128M
 ```
 
-- **300 M `MemoryHigh`** — above the ~203 MB a real pass now needs, with enough room
-  that the cgroup does not live at its throttle point. Sitting *at* `MemoryHigh` is
-  the failure, not a safe steady state.
-- **400 M `MemoryMax`** — the runaway stopper, unchanged in purpose.
+- **300 M `MemoryHigh`** — comfortably above the ~200 MB steady state (71 MB listener +
+  57 MB worker + ~68 MB job), so the cgroup does not live at its throttle point.
+  Sitting *at* `MemoryHigh` is the failure, not a safe steady state.
+- **400 M `MemoryMax`** — the runaway stopper, unchanged in purpose. Note it is *not*
+  above the worst case: a 264 MB per-brand spike on top of 128 MB of runner is ~392 MB,
+  which is inside 400 M but not by much. The first pass rode it out — `high` 536 and
+  flat, `max` 0, `oom_kill` 0 — with reclaim and ~72 MB of zram absorbing the spike,
+  which is exactly the job those two settings exist to do. **If that spike grows, this
+  is where it will bite**, and the fix is to chunk the per-brand upsert rather than to
+  raise the ceiling again.
 - **128 M `MemorySwapMax`, not 0** — the correction. zram compresses ~4.5:1 here, so
   this costs ~28 MB of real RAM and gives reclaim somewhere cheap to go. Bounded, not
   unbounded: unbounded zram reclaim is what caused the *first* livelock.
