@@ -17,7 +17,9 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 
 PROJECT_REF = "zgqywowejxtokqsybqnu"
@@ -258,6 +260,30 @@ def count(path: str) -> int:
     return int(content_range.split("/")[-1]) if "/" in content_range else 0
 
 
+def _keepalive(sock) -> None:
+    """Keep a long, silent request's TCP flow warm.
+
+    An analytics RPC runs 20–60 s server-side, and for all of that time the flow
+    carries no packets in either direction. Something on the path drops it as idle,
+    and the response then arrives to a closed socket — `RemoteDisconnected`.
+
+    It is the VPN, on the evidence: `refresh_peer_prices` succeeded on 08-08 and
+    08-09 and has failed on every run since 08-10, which is the day the tunnel went
+    up (docs/pi-vpn.md). A NAT entry on the exit expiring mid-statement fits exactly.
+    WireGuard's own 25 s keepalive holds the *tunnel* open; it does nothing for the
+    TCP flow inside it, which is what is being dropped.
+
+    Probing every 15 s costs a handful of packets and makes the flow non-idle. The
+    options after SO_KEEPALIVE are Linux-specific, hence the hasattr guard — on a
+    platform without them the keepalive still works, just with the OS default idle
+    time, which is two hours and therefore useless.
+    """
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    for opt, value in (("TCP_KEEPIDLE", 15), ("TCP_KEEPINTVL", 15), ("TCP_KEEPCNT", 8)):
+        if hasattr(socket, opt):
+            sock.setsockopt(socket.IPPROTO_TCP, getattr(socket, opt), value)
+
+
 def rpc(name: str, params: dict | None = None, timeout: int = RPC_TIMEOUT):
     """Call a Postgres function. Aggregates belong in the database, not in a
     round trip that pulls 84,000 rows out just to average them.
@@ -271,31 +297,42 @@ def rpc(name: str, params: dict | None = None, timeout: int = RPC_TIMEOUT):
     A socket timeout does NOT mean the work did not happen — the statement keeps
     running server-side and usually finishes. All three functions replace their
     own day's rows rather than appending, so the safe response is to re-run.
+
+    Uses http.client directly rather than urlopen, only so the socket can be reached
+    to set keepalives on it before the request goes out — see `_keepalive`.
     """
     url, key = _creds()
-    req = urllib.request.Request(
-        f"{url}/rest/v1/rpc/{name}",
-        data=json.dumps(params or {}).encode(),
-        headers={
-            "apikey": key,
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
+    host = urllib.parse.urlsplit(url).netloc
+    payload = json.dumps(params or {}).encode()
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    conn = http.client.HTTPSConnection(host, timeout=timeout)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read().decode()
-            return json.loads(body) if body else None
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"rpc {name}: HTTP {exc.code} — {exc.read().decode()[:300]}") from exc
+        conn.connect()
+        _keepalive(conn.sock)
+        conn.request("POST", f"/rest/v1/rpc/{name}", body=payload, headers=headers)
+        resp = conn.getresponse()
+        body = resp.read().decode()
+        if resp.status >= 400:
+            raise RuntimeError(f"rpc {name}: HTTP {resp.status} — {body[:300]}")
+        return json.loads(body) if body else None
+    except TimeoutError as exc:
+        # Must precede the OSError clause below, which would otherwise swallow it --
+        # TimeoutError is an OSError subclass, and this message is the more useful one.
+        raise RuntimeError(
+            f"rpc {name}: no response within {timeout}s. The statement may still be "
+            f"running server-side; re-running is safe."
+        ) from exc
     except (OSError, http.client.HTTPException) as exc:
         # Everything that is not an HTTP *response*: a dropped socket, a refused or
-        # reset connection, DNS failure, or the socket timeout above. These used to
-        # escape as their own types, which meant callers that deliberately catch
-        # RuntimeError to carry on -- analytics.py runs three independent snapshots --
-        # aborted on the first one instead. A RemoteDisconnected on refresh_peer_prices
-        # cost the brand and predictor snapshots for 2026-08-10 and 08-11 that way.
+        # reset connection, DNS failure. These used to escape as their own types, which
+        # meant callers that deliberately catch RuntimeError to carry on --
+        # analytics.py runs three independent snapshots -- aborted on the first one
+        # instead. A RemoteDisconnected on refresh_peer_prices cost the brand and
+        # predictor snapshots for 2026-08-10 and 08-11 that way.
         #
         # Note the wording: this says the CALL failed, not that the work did not
         # happen. Per the docstring above, the statement usually keeps running and
@@ -303,8 +340,7 @@ def rpc(name: str, params: dict | None = None, timeout: int = RPC_TIMEOUT):
         # assume the day is missing.
         raise RuntimeError(f"rpc {name}: {type(exc).__name__} — {exc} "
                            f"(the call failed; the statement may still have committed)") from exc
-    except (TimeoutError, urllib.error.URLError) as exc:
-        raise RuntimeError(
-            f"rpc {name}: no response within {timeout}s. The statement may still be "
-            f"running server-side; re-running is safe."
-        ) from exc
+    finally:
+        conn.close()
+
+

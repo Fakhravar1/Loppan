@@ -133,16 +133,12 @@ jobs:
           LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
           BUCKET: ${{ inputs.bucket }}
           LOPPAN_TRACEMALLOC: ${{ inputs.trace && '1' || '0' }}
-          # The pass's Python objects peak at 16 MB and retain nothing -- measured by
-          # running the real sweep loop against synthetic hits under tracemalloc. The
-          # ~250 MB RSS is therefore NOT Python, and the only other allocator in the hot
-          # path is OpenSSL: algolia._post opens a fresh TLS connection per request via
-          # urlopen, and a bucket makes thousands. Those buffers come from glibc malloc,
-          # which keeps freed heap rather than returning it once fragmented.
-          #
-          # Capping the arena count is the cheap half of the test. If peak RSS does not
-          # move, the answer is connection reuse in algolia._post, not tuning here.
-          MALLOC_ARENA_MAX: "2"
+          # No MALLOC_ARENA_MAX here, deliberately. It was tried on 2026-08-11 and did
+          # nothing -- bucket 7 peaked at 264 MB with it, the same as without -- and the
+          # test was badly chosen anyway: this path is single-threaded, so glibc uses the
+          # main arena regardless and the arena cap could never have applied. The real
+          # fix was connection reuse in algolia._post. Left as a comment so nobody adds
+          # it back as a plausible-looking tuning knob.
         run: |
           if [ -z "$LOPPAN_SUPABASE_KEY" ]; then
             echo "::error::LOPPAN_SUPABASE_KEY is not set — nothing could be written."
