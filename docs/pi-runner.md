@@ -319,11 +319,44 @@ the arenas. This is not obmalloc ratcheting.
 **Also checked and clear:** `algolia.search` memoises nothing, and `enrol`'s module-level
 `_lookup` / `_brands` / `_masks` caches are bounded by distinct *values*, not item count.
 
-So something retains ~4 KB per staged item for the length of a pass and has not been
-found yet. **The next step is measurement, not another guess** — run the pass with
-`tracemalloc` snapshotting the top allocations, rather than reasoning about the code.
-Until then the number is known, bounded by the cgroup, and survivable; it is simply not
-understood.
+**Eliminated — "it scales with items staged", which is what the table above suggests.**
+It does not. Bucket 6 of 24 staged 21,903 items and peaked at **234 MB**; bucket 3 of 12
+staged 66,003 and peaked at 264 MB. A third of the items, essentially the same peak. The
+linear fit over three points was a coincidence, and the 12 → 24 bucket split — made on
+the strength of it — did **not** halve the peak. (It is still worth having for rotation
+speed and shorter runs; it just did not buy what it was sold on.)
+
+### Where it actually is: not Python
+
+Settled by tracing the **real** `sweep()` loop off the Pi — `algolia` and `db` stubbed,
+`enrol.row_of`, `search.image_paths` and the loop itself untouched — over 80,000 items
+including one 20,000-item brand:
+
+```
+traced PEAK 16.3 MB     top retained site at end: 0.01 MB
+```
+
+**16 MB, retaining nothing, against ~250 MB RSS.** `tracemalloc` only sees Python's
+allocator, so that gap is the finding: the memory is C-level and no amount of reading
+`sweep_pool.py` would ever have located it. It also explains why every Python-level fix
+failed, and why the fragmentation test came back clean — that tested obmalloc, and this
+is glibc.
+
+The only C allocator in the hot path is OpenSSL. `algolia._post` calls
+`urllib.request.urlopen` per request, so **every Algolia request builds a fresh TLS
+connection**, and a bucket makes thousands of them across brands, size shapes and the
+price-split recursion. Those buffers come from glibc malloc, which holds freed heap
+rather than returning it once fragmented. It tracks *requests*, not items — which is
+exactly why the per-item fit kept nearly working and then broke.
+
+Two fixes, cheap first: `MALLOC_ARENA_MAX=2` in `pool.yml` (a cap on glibc's arenas),
+and if that does not move it, **connection reuse in `algolia._post`** — which would be
+faster as well as smaller, since it would stop paying a TLS handshake per request.
+
+⚠️ **Do not run `tracemalloc` on the Pi to check this.** Its bookkeeping does not fit
+beside the job in a 300 MB cgroup: 25 frames gave 114,002 throttle events and load 27,
+1 frame still pinned the cgroup at `MemoryHigh` with ~2M throttle events, and both runs
+died and left an orphaned process behind. Trace it off the box, as above.
 - `pool.yml` runs under `/usr/bin/time -v` permanently, as `track.yml` already did.
   This job was unmeasured, which is the only reason it grew past the cap unnoticed.
 

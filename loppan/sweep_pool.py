@@ -47,13 +47,22 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from loppan import algolia, db, enrol, search, sizes
 
-# Opt-in allocation tracing, for finding what a pass RETAINS. Peak RSS grows with the
-# items a pass stages -- ~4 KB each -- and per-brand buffering, allocator fragmentation
-# and client-side caching have each been tested and ruled out. tracemalloc answers it
-# with a line number instead of another hypothesis. Off by default: tracing roughly
-# doubles the runtime, so this is a deliberate one-off, not permanent instrumentation.
+# Opt-in allocation tracing.
 #
-#   gh workflow run pool.yml -f trace=true
+# ⚠️ Do not run this on the Pi. tracemalloc's own bookkeeping does not fit beside the
+# job inside a 300 MB cgroup: at 25 frames it produced 114,002 throttle events and load
+# 27, at 1 frame it still pinned the cgroup at MemoryHigh with ~2M throttle events, and
+# both runs died. The tracer reproduced the fault it was sent to diagnose.
+#
+# Trace it OFF the Pi instead: drive `sweep()` against synthetic hits with `algolia` and
+# `db` stubbed, leaving enrol.row_of / search.image_paths / this loop as the real thing.
+# That is what established the answer below, and it needs no runner, cgroup or key.
+#
+# The answer, for anyone tempted to look again: **the Python side retains nothing.**
+# 80,000 items including one 20,000-item brand peak at 16.3 MB traced, ~0 retained at
+# the end. A pass's ~250 MB RSS is therefore not Python objects, and tracemalloc cannot
+# see it. It is OpenSSL, via the fresh TLS connection `algolia._post` opens for every
+# request. See the MALLOC_ARENA_MAX note in .github/workflows/pool.yml.
 TRACE = os.environ.get("LOPPAN_TRACEMALLOC") == "1"
 
 # 24, raised from 12 on 2026-08-11. Two separate ceilings care about this number.
