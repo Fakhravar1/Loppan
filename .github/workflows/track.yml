@@ -174,4 +174,22 @@ jobs:
         # Deliberately not `continue-on-error`: unlike the analytics layer, a missing
         # shortlist is immediately visible as an empty grid, so a loud failure costs
         # nothing and a quiet one would leave yesterday's picks looking like today's.
+        #
+        # ⚠️ DISABLED 2026-08-11. This step DESTROYS THE POOL. `refresh_shortlist()`
+        # predates the bucket rotation, knows nothing about `bucket`, and clears
+        # `shortlist_daily` wholesale — so running it wipes every bucketed row that
+        # `pool.yml`'s twelve daily sweeps built and resets the rotation to bucket 0.
+        # Observed exactly that on 2026-08-11: 8 covered buckets and ~78,000 rows gone,
+        # replaced by 37,010 rows with no bucket at all.
+        #
+        # It had been silently skipped since 08-10 because `analytics.py` always failed
+        # ahead of it, which is the only reason the collision never showed. Fixing
+        # analytics un-skipped it, and it ran.
+        #
+        # Two systems now claim `shortlist_daily` and only one can own it. The pool is
+        # the live design — `sweep_pool.py` + `refresh_pool_bucket()`, twelve runs a day,
+        # bucket-aware, and what docs/analytics.md §9 describes. `shortlist.py` is the
+        # pre-pool path. Re-enable it only after `refresh_shortlist()` is either retired
+        # or taught about buckets; the README's "must stay there" predates the pool.
+        if: false
         run: python3 loppan/shortlist.py
