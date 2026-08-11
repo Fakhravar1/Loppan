@@ -255,6 +255,7 @@ def sweep(bucket: int, dry: bool) -> int:
     enrol._load_caches()
     today = dt.date.today().isoformat()
     staged = seen_brands = 0
+    trace_high = 0.0        # highest RSS already reported on, MB
 
     for i, brand in enumerate(brands, 1):
         # `seen` is a set of objectIDs, not a dict of hits, because the same item comes
@@ -338,9 +339,18 @@ def sweep(bucket: int, dry: bool) -> int:
         # when nobody needs it.
         if i % 250 == 0:
             print(f"  {i:,}/{len(brands):,} brands · {staged:,} staged", flush=True)
-            # Reported on the same interval as the progress line so the two can be read
-            # together: what grew, against how many items had been staged when it grew.
-            _trace(f"{i:,} brands in, {staged:,} staged")
+
+        # Report on RSS JUMPS rather than on a brand interval. Peak turned out not to
+        # track items staged -- bucket 6 of 24 hit 234 MB on 21,903 items where bucket 3
+        # of 12 hit 264 MB on 66,003 -- so a fixed interval samples mostly flat stretches
+        # and can miss the step entirely. Firing on the step names the brand that caused
+        # it and dumps the allocation sites while the memory is still held.
+        if TRACE:
+            rss = _rss_mb()
+            if rss > trace_high + 20:
+                trace_high = rss
+                _trace(f"RSS step at brand {i:,}/{len(brands):,} "
+                       f"({brand!r}, {len(seen):,} hits) · {staged:,} staged")
 
     print(f"  staged {staged:,} items from {seen_brands:,} brands with enough depth")
     _trace("end of sweep")
