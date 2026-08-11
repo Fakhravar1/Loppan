@@ -30,6 +30,7 @@ from __future__ import annotations
 import datetime as dt
 import pathlib
 import sys
+import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
@@ -41,6 +42,25 @@ from loppan import db
 # under one date and predictors under the next, and the join between them silently
 # misses a day.
 AS_OF = object()   # placeholder, swapped for the run's date in main()
+
+# How a step can be checked to have landed even though its call did not come back.
+#
+# Supabase's API gateway cuts a request at 60 s and the statement keeps running and
+# commits regardless, so a long RPC reports failure for work that succeeded. That is not
+# hypothetical: on 2026-08-11 `snapshot_predictors` returned RemoteDisconnected while
+# writing all 40 of its rows, for both targets, correctly.
+#
+# So for steps that can outlast the gateway, ask the database what happened instead of
+# believing the socket. Only steps with an unambiguous side effect for the day belong
+# here — all of these replace their own day's rows, so "a row exists for p_as_of" is a
+# true completion signal rather than a guess.
+SETTLED = {
+    "snapshot_predictors": "predictor_daily?select=as_of&as_of=eq.{as_of}",
+    "snapshot_brands":     "brand_daily?select=as_of&as_of=eq.{as_of}",
+}
+
+SETTLE_WAIT_S = 150      # a touch over the longest of these, measured ~60 s
+SETTLE_POLL_S = 10
 
 # name, params, unit, chain
 #
@@ -70,6 +90,33 @@ STEPS = [
 ]
 
 
+def _settled(name: str, as_of: str) -> bool:
+    """Did this step's work land, despite the call not coming back?
+
+    Polls rather than asking once: the gateway hangs up at 60 s while the statement is
+    still running, so the rows appear some seconds AFTER the failure is reported. Asking
+    immediately would say no and be wrong.
+
+    A verification failure answers False — if the database cannot be reached to check,
+    the honest reading is "unknown", and unknown belongs in the failed list where a human
+    will look at it.
+    """
+    path = SETTLED.get(name)
+    if not path:
+        return False
+
+    deadline = time.monotonic() + SETTLE_WAIT_S
+    while True:
+        try:
+            if db.count(path.format(as_of=as_of)) > 0:
+                return True
+        except RuntimeError:
+            return False
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(SETTLE_POLL_S)
+
+
 def main() -> None:
     if not db.configured():
         sys.exit("LOPPAN_SUPABASE_KEY is not set")
@@ -94,6 +141,14 @@ def main() -> None:
         try:
             result = db.rpc(name, call or None)
         except RuntimeError as exc:
+            # Before believing it: a step that outlasts the gateway reports failure for
+            # work that is still running and will commit. Ask the database.
+            if _settled(name, as_of):
+                secs = (dt.datetime.now() - started).total_seconds()
+                print(f"  {label}: call dropped after {secs:.0f}s, but the rows for "
+                      f"{as_of} are there — treating as done", flush=True)
+                continue
+
             # Carry on rather than aborting: the snapshots are independent enough that
             # losing the brand snapshot is no reason to also lose the predictors,
             # and a half-built layer is easier to reason about than one that stops

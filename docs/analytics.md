@@ -33,9 +33,26 @@ rebuild, split out of what used to be a single `refresh_peer_prices()`:
 for running **by hand against the database**, where there is no gateway — it takes
 70–99 s and therefore cannot be called over the API at all. See below.
 
-⚠️ **`snapshot_predictors()` at ~51 s is the next one to hit this.** The limit is 60 s
-and it is not shrinking. When it goes, split it the same way rather than rediscovering
-the problem.
+⚠️ **`snapshot_predictors()` crossed the 60 s limit on 2026-08-11**, hours after the peer
+rebuild was split for the same reason. It is *not* split, because it builds two temp
+tables and emits both targets from shared aggregates — splitting by target would not
+halve it, and rewriting an 8 KB statistics function to chase a timeout risks changing
+the numbers the project exists to produce.
+
+Instead `analytics.py` **verifies rather than trusts the socket**. The statement commits
+regardless of the hang-up — verified: it returned `RemoteDisconnected` while writing all
+40 rows, both targets, correctly — so on a dropped call the step is re-checked against
+`predictor_daily` for that `as_of` and treated as done if the rows are there. See
+`SETTLED` in `analytics.py`.
+
+Two properties that keep this honest, both tested: rows genuinely **absent** still fail,
+and a verification that **cannot reach the database** fails too, because unknown belongs
+in front of a human rather than quietly passing. It polls for up to 150 s, since the
+rows land some seconds *after* the gateway hangs up — asking once, immediately, would
+answer no and be wrong.
+
+This is a workaround and reads like one. The real fix is to make the statement finish
+inside 60 s; until then the day's data is correct and the job says so.
 
 Step 1 must come before step 2, because step 2 reads the frozen peer position as one of
 its features. All three must come after `track.py`, for two separate reasons: peer groups
