@@ -37,13 +37,24 @@ into "…among things that happen to fit us". `analytics.md` §8.
 from __future__ import annotations
 
 import datetime as dt
+import os
 import pathlib
 import sys
+import tracemalloc
 import zlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from loppan import algolia, db, enrol, search, sizes
+
+# Opt-in allocation tracing, for finding what a pass RETAINS. Peak RSS grows with the
+# items a pass stages -- ~4 KB each -- and per-brand buffering, allocator fragmentation
+# and client-side caching have each been tested and ruled out. tracemalloc answers it
+# with a line number instead of another hypothesis. Off by default: tracing roughly
+# doubles the runtime, so this is a deliberate one-off, not permanent instrumentation.
+#
+#   gh workflow run pool.yml -f trace=true
+TRACE = os.environ.get("LOPPAN_TRACEMALLOC") == "1"
 
 # 24, raised from 12 on 2026-08-11. Two separate ceilings care about this number.
 #
@@ -96,6 +107,38 @@ STAGING_COLS = {
 
 def _arg(flag: str, default=None):
     return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else default
+
+
+def _rss_mb() -> float:
+    """Resident set size, the number `time -v` reports and the cgroup charges for."""
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024
+    except OSError:
+        pass
+    return 0.0
+
+
+def _trace(label: str) -> None:
+    """Top allocation sites, so a growth term can be named rather than guessed at.
+
+    Prints traced bytes NEXT TO RSS on purpose. tracemalloc only sees allocations made
+    through Python's allocator, so the gap between the two is itself the answer to a
+    question: if RSS climbs while `traced` stays flat, whatever is growing is not a
+    Python object and no amount of reading this file will find it.
+    """
+    if not TRACE:
+        return
+    current, peak = tracemalloc.get_traced_memory()
+    print(f"  [trace] {label}: traced {current / 1048576:.1f} MB "
+          f"(peak {peak / 1048576:.1f}) vs RSS {_rss_mb():.1f} MB", flush=True)
+    for stat in tracemalloc.take_snapshot().statistics("lineno")[:12]:
+        frame = stat.traceback[0]
+        where = f"{frame.filename.rsplit('/', 1)[-1]}:{frame.lineno}"
+        print(f"    {stat.size / 1048576:7.2f} MB  {stat.count:>9,} objs  {where}",
+              flush=True)
 
 
 def bucket_of(brand: str) -> int:
@@ -295,14 +338,24 @@ def sweep(bucket: int, dry: bool) -> int:
         # when nobody needs it.
         if i % 250 == 0:
             print(f"  {i:,}/{len(brands):,} brands · {staged:,} staged", flush=True)
+            # Reported on the same interval as the progress line so the two can be read
+            # together: what grew, against how many items had been staged when it grew.
+            _trace(f"{i:,} brands in, {staged:,} staged")
 
     print(f"  staged {staged:,} items from {seen_brands:,} brands with enough depth")
+    _trace("end of sweep")
     return staged
 
 
 def main() -> None:
     if not db.configured():
         sys.exit("LOPPAN_SUPABASE_KEY is not set")
+
+    if TRACE:
+        # 25 frames so a retained object can be traced back past the helper that built
+        # it to the caller that is actually keeping it alive.
+        tracemalloc.start(25)
+        print("tracemalloc ON — this run is instrumented and will be slower")
 
     dry = "--dry-run" in sys.argv
     today = dt.date.today()

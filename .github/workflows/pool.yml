@@ -46,6 +46,11 @@ on:
         description: Bucket to sweep (blank = the one today's date selects)
         type: string
         required: false
+      trace:
+        description: Report top allocation sites (tracemalloc — roughly doubles runtime)
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: pool
@@ -127,6 +132,7 @@ jobs:
         env:
           LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
           BUCKET: ${{ inputs.bucket }}
+          LOPPAN_TRACEMALLOC: ${{ inputs.trace && '1' || '0' }}
         run: |
           if [ -z "$LOPPAN_SUPABASE_KEY" ]; then
             echo "::error::LOPPAN_SUPABASE_KEY is not set — nothing could be written."
