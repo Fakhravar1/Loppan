@@ -757,3 +757,26 @@ semantics, not the stored label, or it will report a 5–8% leak that does not e
 the straddle rows in `target_sizes` are **redundant** — enabling them adds nothing,
 because the plain codes already match those items. They are kept, disabled and
 annotated, so nobody re-adds them expecting more stock.
+
+### The legacy pool was dropped, 2026-08-11
+
+The 33,460 rows left from the old full-rebuild path were deleted once the rotation was
+proven. They came from the stratified sample across **all** sizes, so **67.4% of them
+were sizes that fit nobody here** — and because they carry no bucket, no sweep would ever
+have claimed them and the rotation would never re-find them. They would have sat there
+indefinitely with peer medians frozen at the day they were built.
+
+After the drop the grid is 58,357 rows across five swept buckets, of which **58,352 fit
+the two profiles**.
+
+**The five that do not are all suits**, and the reason is worth knowing before someone
+calls it a leak:
+
+```
+Kostym  label = WMN-EU-34   fits = ['WMN-EU-34', 'WMN-EU-38']
+```
+
+A two-piece carries a size for each piece. That one matched on the trousers being EU 38
+— a target size — while the jacket it is labelled with is EU 34. So half the garment
+fits. At 5 rows in 58,357 it is not worth filtering, but it is the one case where
+matching on the `sizes` array over-reaches.
