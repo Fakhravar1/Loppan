@@ -362,9 +362,13 @@ def main() -> None:
         sys.exit("LOPPAN_SUPABASE_KEY is not set")
 
     if TRACE:
-        # 25 frames so a retained object can be traced back past the helper that built
-        # it to the caller that is actually keeping it alive.
-        tracemalloc.start(25)
+        # ONE frame, not 25. tracemalloc keeps a traceback per live allocation, so depth
+        # multiplies its own footprint by roughly that factor -- and the report below
+        # only ever reads traceback[0], so the other 24 were pure cost. At 25 this took
+        # the cgroup to its MemoryHigh and produced 114,002 throttle events and a load
+        # average of 27 before the job died: the tracer reproduced the fault it was sent
+        # to diagnose. Raise it only if a caller, not a line, is what is in doubt.
+        tracemalloc.start(1)
         print("tracemalloc ON — this run is instrumented and will be slower")
 
     dry = "--dry-run" in sys.argv
