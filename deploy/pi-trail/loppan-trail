@@ -1,0 +1,81 @@
+#!/bin/sh
+# One line of vital signs, appended every 30 s. Exists because the Pi crashed on
+# 2026-08-12 and left NO evidence: no OOM kill, no kernel error, and a journal whose
+# timestamps cannot be trusted because the board has no RTC (`fixrtc` sets the clock
+# from filesystem mtime at boot, so entries land under the wrong time and jump when NTP
+# syncs). Three crashes in, the honest position was that nothing on the box was
+# recording what happened. This records it.
+#
+# Deliberately dumb: no daemon, no buffering, one append and an fsync. A crash trail
+# that dies with the thing it is watching is worthless, and the LAST lines are the ones
+# that matter, so the cost of an fsync per sample is the entire point.
+#
+# ~250 bytes a sample, 2 a minute -- about 700 KB a day, rotated at 8 MB. Against the
+# 1-3 GB/day this box already writes, that is noise.
+
+LOG=/var/log/loppan-trail.tsv
+MAX_BYTES=8388608
+
+LOPPAN=actions.runner.Fakhravar1-Loppan.qvitta-pi.service
+QVITTA=actions.runner.Fakhravar1-claim-my-train.qvitta-pi.service
+
+cg_field() {   # cgroup-path file -> value, or 0 when the unit is not running
+  [ -r "$1/$2" ] && cat "$1/$2" 2>/dev/null || echo 0
+}
+
+cg_event() {   # cgroup-path event-name -> counter
+  [ -r "$1/memory.events" ] && awk -v k="$2" '$1==k{print $2}' "$1/memory.events" 2>/dev/null || echo 0
+}
+
+psi() {        # /proc/pressure/<file> <some|full> -> avg10
+  awk -v k="$2" '$1==k{sub("avg10=","",$2); print $2}' "/proc/pressure/$1" 2>/dev/null || echo 0
+}
+
+lcg=/sys/fs/cgroup$(systemctl show "$LOPPAN" -p ControlGroup --value 2>/dev/null)
+qcg=/sys/fs/cgroup$(systemctl show "$QVITTA" -p ControlGroup --value 2>/dev/null)
+
+# Header once, so the file is readable without going and finding this script.
+if [ ! -s "$LOG" ]; then
+  printf 'ts\tup_s\tload1\tmem_avail_mb\tswap_used_mb\tpsi_mem_some\tpsi_mem_full\tpsi_io_some\tlop_mb\tlop_swap_mb\tlop_high\tqvi_mb\tqvi_swap_mb\tqvi_high\ttop_rss_mb\ttop_cmd\n' > "$LOG"
+fi
+
+# Rotate by truncation rather than logrotate: one file, one dependency, and losing the
+# oldest half is fine when what we want is the run-up to the most recent crash.
+if [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt "$MAX_BYTES" ]; then
+  tail -n 5000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+fi
+
+for _ in 1 2; do
+  avail=$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo)
+  stot=$(awk '/^SwapTotal:/{print $2}' /proc/meminfo)
+  sfree=$(awk '/^SwapFree:/{print $2}' /proc/meminfo)
+  top=$(ps -eo rss,comm --sort=-rss --no-headers 2>/dev/null | head -1)
+
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$(cut -d. -f1 /proc/uptime)" \
+    "$(cut -d' ' -f1 /proc/loadavg)" \
+    "$avail" \
+    "$(( (stot - sfree) / 1024 ))" \
+    "$(psi memory some)" "$(psi memory full)" "$(psi io some)" \
+    "$(( $(cg_field "$lcg" memory.current) / 1048576 ))" \
+    "$(( $(cg_field "$lcg" memory.swap.current) / 1048576 ))" \
+    "$(cg_event "$lcg" high)" \
+    "$(( $(cg_field "$qcg" memory.current) / 1048576 ))" \
+    "$(( $(cg_field "$qcg" memory.swap.current) / 1048576 ))" \
+    "$(cg_event "$qcg" high)" \
+    "$(( $(echo "$top" | awk '{print $1}') / 1024 ))" \
+    "$(echo "$top" | awk '{print $2}')" >> "$LOG"
+
+  sync "$LOG" 2>/dev/null || sync
+
+  # The timer fires once a minute; two samples 30 s apart give 30 s resolution without
+  # needing a second timer unit.
+  [ "$_" = 1 ] && sleep 30
+done
+
+# Explicit, and not decoration. Without it the script's exit status is that of the
+# `[ "$_" = 1 ]` test above, which is FALSE on the second pass -- so a working sampler
+# exits 1, systemd records a failed oneshot every single minute, and the unit that is
+# supposed to be the reliable witness looks broken in the journal.
+exit 0
