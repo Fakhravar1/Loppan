@@ -65,11 +65,24 @@ WINDOW_CHUNKS = MAX_WORKERS * 4
 
 _throttle_lock = threading.Lock()
 
-TRANSIENT = (
-    ConnectionError, TimeoutError,
-    http.client.RemoteDisconnected, http.client.IncompleteRead,
-    urllib.error.URLError,
-)
+# OSError rather than the old list of specific types, and the change is not cosmetic.
+#
+# `urlopen` used to wrap every socket- and TLS-level failure in `urllib.error.URLError`,
+# so naming URLError here caught the lot. Talking to http.client directly -- which is
+# what connection reuse required -- removed that wrapper, and the underlying exceptions
+# now surface raw. `ssl.SSLEOFError` is the one that found this: it is an `ssl.SSLError`
+# and therefore an `OSError`, but it is NOT a `ConnectionError` or a `URLError`, so it
+# fell straight through the handler and killed a sweep on 2026-08-11 at 23:07.
+#
+# Reuse makes it more likely, not less: a server closing an idle kept-alive TLS
+# connection is exactly how an SSLEOFError arises, and that is now a routine event
+# rather than something that could not happen when every request built its own socket.
+#
+# OSError is the common parent of all of them -- ConnectionError, TimeoutError,
+# socket.gaierror, the whole ssl.SSLError family -- which is the same net that db.rpc
+# casts for the same reason. HTTPException covers the http.client-specific ones, which
+# are not OSErrors.
+TRANSIENT = (OSError, http.client.HTTPException)
 RETRIES = 4
 BACKOFF_S = 3
 
@@ -149,10 +162,9 @@ def _post(path: str, body: dict) -> dict:
             conn.request("POST", f"/1/indexes/{path}", body=payload, headers=headers)
             resp = conn.getresponse()
             data = resp.read()
-        except (*TRANSIENT, http.client.HTTPException) as exc:
-            # HTTPException covers the stale-connection family that urlopen never
-            # produced because it never reused anything: CannotSendRequest,
-            # ResponseNotReady, BadStatusLine.
+        except TRANSIENT as exc:
+            # TRANSIENT now spans OSError and HTTPException — see its definition for why
+            # the old explicit list stopped being sufficient once urlopen went away.
             _drop_connection()
             if attempt == RETRIES - 1:
                 raise
