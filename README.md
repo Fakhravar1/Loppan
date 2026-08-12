@@ -153,14 +153,27 @@ sortable on every price- and demand-driving column and filterable on the rest.
 
 It is a **precomputed table, not a live query**, because ranking the shelf costs a
 seq scan over 693k rows and 3.0 s — over the anon statement timeout. Stored, it
-answers in 4.9 ms. Rebuild it with:
+answers in 4.9 ms. It is filled by the **pool rotation**:
 
 ```bash
-python loppan/shortlist.py
+python loppan/sweep_pool.py     # one bucket; runs 12x a day from pool.yml
+python loppan/pool_refresh.py   # price and liveness across the whole pool
 ```
 
-Runs automatically as the last step of `track.yml`, after `analytics.py`, and must
-stay there — it reads `peer_prices` and `brand_daily`, which those steps rebuild.
+⚠️ **`loppan/shortlist.py` no longer builds this, and running it destroys the pool.**
+It predates the bucket rotation: `refresh_shortlist()` knows nothing about `bucket` and
+clears `shortlist_daily` wholesale, so it wipes every bucketed row the sweeps built and
+resets the rotation to bucket 0. It did exactly that on 2026-08-11 — 8 covered buckets
+and ~78,000 rows replaced by 37,010 with no bucket at all.
+
+It had been silently skipped since 08-10 because `analytics.py` always failed ahead of
+it, which is the only reason two systems claiming the same table never collided; fixing
+analytics un-skipped it and it ran. The step is now `if: false` in `track.yml`. This
+paragraph replaces a line that said it "must stay there", which predated the pool.
+
+**Unresolved: which of the two owns `shortlist_daily`.** The pool is the live design —
+bucket-aware, twelve runs a day, `docs/analytics.md` §9. `shortlist.py` is the pre-pool
+path. Re-enable it only once `refresh_shortlist()` is retired or taught about buckets.
 
 **Two things it will mislead you about if you let it.** A large discount usually
 means a mismatched peer group, so `peer_n` and the grouping are on every card. And

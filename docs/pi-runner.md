@@ -418,6 +418,19 @@ and both workloads sit well under their throttle points in normal use.
 
 ### If you are reading this because the box is down again
 
+**Read the trail first.** It is the only thing on this box that records what happened,
+and after three crashes that left nothing it is the reason a fourth should be
+diagnosable. The last lines before the gap are the whole point:
+
+```bash
+# The run-up to the silence: where did memory go, and which cgroup was holding it?
+sudo tail -40 /var/log/loppan-trail.tsv | column -t
+# Uptime resets to a small number at the reboot, so the gap is easy to find:
+sudo awk -F'\t' 'NR>1{print $1, $2, $3, $4}' /var/log/loppan-trail.tsv | tail -60
+```
+
+Then the live picture:
+
 ```bash
 # Is it thrashing rather than busy? Near-100% "full" with no dirty pages is the tell.
 cat /proc/pressure/memory /proc/pressure/io; grep Dirty /proc/meminfo
@@ -434,6 +447,56 @@ unit, including this persistent `memory.conf`, leaving the runner uncapped — w
 the one state guaranteed to take the whole box down. Use
 `systemctl set-property --runtime` for a temporary change and delete the runtime file
 to undo it.
+
+## The third crash — 2026-08-12 — and why there is now a trail
+
+The box died again overnight and was power-cycled at 07:33 CEST. **The cause is not
+known**, and that is the finding rather than a gap in this document.
+
+What was ruled out, all measured rather than assumed: the SD card is healthy and the
+filesystem came up clean (no recovery, no orphan inodes), the SoC was at 64.7 °C with no
+under-voltage or throttling in `dmesg`, and there was **no OOM kill and no kernel error
+of any kind**. The last GitHub run before the silence — a pool sweep of bucket 3 that
+started 03:00 UTC — has *no conclusion on its step*, which is the runner dying mid-job
+rather than a job failing.
+
+### Why the journal is no help, and will not be
+
+The board has **no RTC**. `fixrtc` sets the clock from filesystem mtime at boot, so
+entries written before NTP syncs land under a wildly wrong timestamp and then jump.
+`journalctl --list-boots` reports the current boot as starting 2026-06-05, and `-b -1`
+returns February. **Do not try to reconstruct a crash window from the journal on this
+box** — three attempts across two days produced nothing but confusion.
+
+### The trail
+
+`/usr/local/sbin/loppan-trail` (source: `deploy/pi-trail/loppan-trail`), a systemd timer
+writing one TSV line to `/var/log/loppan-trail.tsv` every 30 s:
+
+| | |
+|---|---|
+| what | load, `MemAvailable`, swap, all three PSI figures, and `memory.current` / `memory.swap.current` / `high` for **both** runner cgroups, plus the largest process |
+| why both cgroups | the open question is whether one workload runs away or the two together exceed 899 MB, and only a number for each tells them apart |
+| durability | one append and an `fsync` per sample — a trail that buffers loses exactly the lines anyone will want |
+| isolation | runs outside both runner cgroups, `Nice=-5`, realtime IO priority, so it keeps writing while they are the thing going wrong |
+| cost | ~700 KB/day, truncated at 8 MB, against the 1–3 GB/day this box already writes |
+
+### What it found immediately, and what it did not
+
+Re-running the exact crash-time workload — bucket 3 — **succeeded**: 32,349 staged,
+7,002 kept, 4:59. It then overlapped a real dbt build without difficulty. Worst combined
+use was **567 MB of 899**, `MemAvailable` never fell below 298 MB, peak memory pressure
+1.55 %, peak load 2.21.
+
+So the crash **did not reproduce**, and the tempting theory — that Loppan's 300M and
+Qvitta's 450M `MemoryHigh` sum to more than the box has — is *not* supported by that
+data. It is recorded here as an untested hypothesis, not a diagnosis. Note also that
+Loppan's spike and Qvitta's build never coincided in the observed window; the genuinely
+bad case, ~299 MB against a ~495 MB build, has still never been seen.
+
+**Cadence is a red herring.** dbt runs every 15 minutes and takes ~4, so a sweep of any
+length overlaps it regardless of how often the sweep runs. Changing pool frequency does
+not avoid contention, it only changes how often Loppan is the one contending.
 
 ## The sibling's runner is capped too (2026-08-08)
 
@@ -488,6 +551,14 @@ does fit, and both workloads sit well below their throttle points in normal use.
 swap it reclaims page cache it needs back immediately. That is the 2026-08-10 livelock.
 Headroom under `MemoryHigh` is the thing being bought here; `MemoryMax` only catches
 what headroom fails to.
+
+⚠️ **And Loppan does not sit below its throttle point. Measured 2026-08-12, it sits
+exactly on it.** Every sweep spike reaches 291–299 MB against a 300 MB `MemoryHigh`,
+throttles, and pushes ~80 MB into swap — `high` events climbed 821 → 1434 in three
+minutes — *while the box had 300–480 MB free*. Its page cache is squeezed to 30 MB in
+the process, against Qvitta's 237 MB. So the sentence above describes an intention, not
+the machine: Loppan is being constrained against a limit the box is not short of. That
+is worth fixing on its own merits; it is **not** established that it causes the crashes.
 
 If both ever hit their hard ceiling simultaneously, the global OOM killer takes a
 process and a job dies. That is the outcome we want, and it is precisely what was
