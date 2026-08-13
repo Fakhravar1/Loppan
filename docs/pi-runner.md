@@ -453,6 +453,12 @@ to undo it.
 The box died again overnight and was power-cycled at 07:33 CEST. **The cause is not
 known**, and that is the finding rather than a gap in this document.
 
+> ⚠️ **Superseded 2026-08-13: the cause is now known, and it was the SD card.** The same
+> failure recurred on bucket 3 and was traced to `Runner.Listener` taking SIGBUS on
+> unreadable sectors. **"The SD card is healthy" below is false** — `/var/crash` holds
+> dumps from 08-11, predating this entry. See "The fourth crash" below; the paragraph is
+> kept because the reasoning that produced a wrong conclusion is worth seeing.
+
 What was ruled out, all measured rather than assumed: the SD card is healthy and the
 filesystem came up clean (no recovery, no orphan inodes), the SoC was at 64.7 °C with no
 under-voltage or throttling in `dmesg`, and there was **no OOM kill and no kernel error
@@ -497,6 +503,103 @@ bad case, ~299 MB against a ~495 MB build, has still never been seen.
 **Cadence is a red herring.** dbt runs every 15 minutes and takes ~4, so a sweep of any
 length overlaps it regardless of how often the sweep runs. Changing pool frequency does
 not avoid contention, it only changes how often Loppan is the one contending.
+
+## The fourth crash — 2026-08-13 — the SD card, and it explains the third
+
+**The cause of the third crash is no longer unknown.** It was the SD card, and the
+section above says the opposite in two places. Both are corrected below rather than
+edited out, because the reasoning that produced them is the point.
+
+### What happened
+
+The 09:23 UTC pool sweep — **bucket 3 again** — died 12m13s in. Same signature as
+08-12: no conclusion on the step, and `gh api .../jobs/<id>/logs` returns
+`BlobNotFound`. GitHub reported the runner `offline` while `systemctl` reported it
+`active (running)`.
+
+That contradiction is the whole diagnosis. `runsvc.sh` is the unit's `MainPID` and it
+survives; the `Runner.Listener` child was dying and being relaunched every ~75 s:
+
+```
+Runner listener exited with error code null
+Runner listener exit with undefined return code, re-launch runner in 5 seconds.
+```
+
+`error code null` is a process killed by a signal, not one that exited. `apport` named
+the signal: it was invoked as `-p<pid> -s7`, and **signal 7 is SIGBUS** — a page fault
+on an mmap'd file whose backing blocks cannot be read.
+
+`dmesg` had the media underneath it: **351** `mmc0: Got data interrupt ...` lines and
+**109** `I/O error, dev mmcblk0` on a contiguous range, sectors 22902312–22902496 —
+about 92 KB, inside `mmcblk0p2` (root), not the boot partition.
+
+### Why this explains 08-12, and 08-11
+
+`/var/crash` held the trail the journal could not (no RTC — see above):
+
+| Crash dump | Local (CEST) | UTC | Previously blamed on |
+|---|---|---|---|
+| `pool_refresh.py` | Aug 11 12:45 | 10:45 | — |
+| `shortlist.py` | Aug 11 18:32 | 16:32 | the four failed `track` dispatches |
+| `sweep_pool.py` | Aug 12 01:13 | 23:13 Aug 11 | `ssl.SSLEOFError`, "the tunnel" |
+| `Runner.Listener` + `.Worker` | Aug 13 03:20 | 01:20 | — |
+
+⚠️ **Two claims above are now known to be wrong.** "The SD card is healthy" was believed
+on 08-12 and was already false — the card had been producing crash dumps since 08-11.
+And the failures from 08-11 onward were attributed to memory and to TLS; at least three
+of them were this. The 08-07 and 08-10 livelocks had genuine measured memory evidence
+and still stand — **this does not retract those** — but everything after 08-11 should be
+re-read with a failing card in mind.
+
+⚠️ **`BlobNotFound` on a job's logs is a hardware signal, not a GitHub glitch.** A job
+that fails uploads its log. A job whose *runner* dies cannot. Check it first, before
+theorising about the workload:
+
+```bash
+gh api repos/:owner/:repo/actions/jobs/<job-id>/logs
+```
+
+### What was done, and what it proves
+
+Stop the unit (which ends the crash loop and stops `apport` writing dumps onto the
+failing card), then reboot. Measured either side of it:
+
+| | before | after |
+|---|---|---|
+| `mmc0` data-interrupt lines | 351 | **2** |
+| `I/O error` lines | 109 | **0** |
+| Unreadable files in `/opt/actions-runner-loppan` | Listener SIGBUS loop | **0 of ~2,000** |
+| Memory pressure `some avg10` | 10.78 | **0.00** |
+| Load (5 min) | 13.59 | 1.43 |
+
+Every file in the runner tree was then read end to end — the exact data that was
+faulting — provoking **zero** I/O errors. The unit was re-enabled and came back with
+`√ Connected to GitHub`; GitHub reports `online`.
+
+⚠️ **This does not prove the card is healthy, and it must not be read that way.** 109
+hard read failures on a fixed sector range is not noise. A power cycle plausibly let the
+card's controller remap the block, or the fault was controller/timing-level rather than
+dying media — `Got data interrupt ... even though no data operation was in progress` is
+a known Pi SDHCI quirk, and 2 of them is background where 351 was not. The honest state
+is *currently error-free under a read of exactly what was failing*.
+
+**The load during the incident was not Loppan's.** It was the sibling's `dbt build`, and
+the Loppan cgroup sat at 29.5 MB against a 300 MB `MemoryHigh`. Do not reach for the
+memory ceiling for this failure mode — it is the wrong instrument and it cost a day here.
+
+### Watching for the return
+
+Cheap, and the only two that matter:
+
+```bash
+sudo dmesg -T | grep -c "I/O error"
+journalctl -u 'actions.runner.Fakhravar1-Loppan.qvitta-pi.service' | grep -c 'error code null'
+```
+
+Zero and stable is fine. Either one climbing means it is back, and then the card is
+genuinely finished. **Move root to a USB SSD** — three incidents in a week on a box
+Loppan now depends on is enough, and it retires this whole failure class rather than
+waiting for the next power cycle to postpone it again.
 
 ## The sibling's runner is capped too (2026-08-08)
 
