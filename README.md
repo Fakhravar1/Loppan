@@ -175,6 +175,22 @@ paragraph replaces a line that said it "must stay there", which predated the poo
 bucket-aware, twelve runs a day, `docs/analytics.md` §9. `shortlist.py` is the pre-pool
 path. Re-enable it only once `refresh_shortlist()` is retired or taught about buckets.
 
+**The 08-11 rows could never have healed on their own, and now they can (2026-08-13).**
+`refresh_pool_bucket` cleaned up with `delete ... where bucket = p_bucket`, and a NULL
+bucket never matches that — so the un-bucketed rows were invisible to every sweep's
+cleanup. 28,364 were still being served on 08-13, **half of them in buckets that had
+already been re-swept**: rankings frozen on 08-11 that nothing would ever replace or
+remove, with prices kept fresh by `pool_refresh` so they looked current. They have been
+deleted, and the cleanup is now `where bucket = p_bucket or bucket is null` — a row
+without a bucket is not owned by the rotation, so the rotation reclaims it on the next
+sweep. Any future writer that bypasses the bucket design gets undone within one pass
+instead of leaving immortal rows behind.
+
+⚠️ `not null` on `bucket` would be the stronger guard and **cannot be used**:
+`pool_refresh.py` upserts a partial payload keyed on `item_id`, and PostgREST validates a
+complete insert tuple before resolving the conflict (see the note on `db.update`), so it
+would fail the whole daily price-and-liveness refresh.
+
 **Two things it will mislead you about if you let it.** A large discount usually
 means a mismatched peer group, so `peer_n` and the grouping are on every card. And
 cheap is not the same as sells — several brands near the top sell **0.00%/day** —

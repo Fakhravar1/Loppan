@@ -778,6 +778,24 @@ python loppan/sweep_pool.py --limit 40 # a slice, for testing only
 `sweep_staging` holds the bucket, `refresh_pool_bucket()` computes its peer groups,
 writes the survivors into `shortlist_daily` with `swept_on`, and **truncates staging**.
 
+⚠️ **A row with no bucket used to be immortal, and is now reclaimed (2026-08-13).** The
+cleanup was `delete from shortlist_daily where bucket = p_bucket`, and `bucket = null` is
+never true — so the 37,010 un-bucketed rows `shortlist.py` wrote over the pool on
+2026-08-11 were invisible to every sweep's cleanup. They could only be removed by the
+delete-by-`item_id` above, and then only if the same item happened to be staged again;
+**28,364 were still being served on 08-13, half of them in buckets that had already been
+re-swept.** Rankings frozen on 08-11 that nothing would ever replace, kept price-fresh by
+`pool_refresh` so they read as current.
+
+The clause is now `where bucket = p_bucket or bucket is null`. A row without a bucket is
+by definition not owned by the rotation, so the rotation is free to reclaim it, and any
+future writer that bypasses the bucket design gets undone within one sweep.
+
+`not null` on `bucket` would be the stronger guard and **cannot be used**: `pool_refresh`
+upserts a partial payload keyed on `item_id`, and PostgREST validates a complete insert
+tuple before resolving the conflict — see the note on `db.update` — so it would fail the
+whole daily price-and-liveness refresh.
+
 ### First full bucket, 2026-08-10 — measured
 
 | | |
