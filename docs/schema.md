@@ -87,6 +87,17 @@ obtainable per item from Parse.
 ⚠️ `sale_started` is the trap. It looks like a listing date and is not. A "days on market"
 feature built on it measures time-at-current-price.
 
+⚠️ **`last_seen` did not mean this before 2026-08-13, and values written before then are
+not what the row above says.** `track.py` only wrote it through `changed()`, which builds
+an update solely for rows whose price, favourites, reserved or last-chance flag had moved
+— so the column recorded the last time an item *changed*, not the last time it was seen.
+The 08-13 pass confirmed 632,871 items alive and stamped 220,396 of them; **200,593 live
+items were carrying a `last_seen` more than two days stale while being checked every
+pass**. It is now written by `track.stamp_alive()`, the single writer, for every item the
+sweep finds. Rows are corrected the first time a pass touches them, so treat any
+`last_seen` earlier than the first completed pass after 2026-08-13 as unreliable, and use
+`outcome is null` — not `last_seen` — to mean "on the shelf".
+
 ### Status
 
 | Column | What it is |

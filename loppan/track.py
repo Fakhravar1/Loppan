@@ -66,6 +66,7 @@ from loppan import algolia, cohort, db, sellpy
 WRITE_BATCH = 500
 ADJUDICATE = 60      # MarketOffer $in ceiling, verified
 PAGE_ITEMS = 20_000  # live rows held at once; sets peak memory, see live_item_pages
+STAMP_BATCH = 5_000  # ids per stamp_last_seen call; sent in the body, so no URL ceiling
 
 OUTCOME = {"sold": 1, "expired": 2, "unknown": 3, "still_listed": None}
 
@@ -157,8 +158,37 @@ def histories_for(item_ids: list[str]) -> dict[str, list]:
     return out
 
 
+def stamp_alive(item_ids: list[str], today: dt.date) -> int:
+    """Record that these items were confirmed on the shelf today.
+
+    Deliberately NOT part of `changed()`. That builds a row only when price or
+    attention actually moved, which is right — writing all 630k rows every pass to
+    change nothing would be pure cost. But `last_seen` is not an attribute of the
+    item, it is a fact about the observation, and it holds for every item the sweep
+    found, moving or not.
+
+    Leaving it to `changed()` made it mean "last observed to MOVE". The 2026-08-13
+    pass confirmed 632,871 items alive and stamped 220,396 of them, so 200,593 live
+    items carried a `last_seen` over two days stale while being seen every pass —
+    and docs/schema.md promises "last time we confirmed it alive". Anything reading
+    it for liveness or recency was reading the wrong thing.
+
+    This is now the ONLY writer of `last_seen`; `changed()` no longer sets it. Two
+    writers of one column is how the column came to mean two things.
+    """
+    stamped = 0
+    for i in range(0, len(item_ids), STAMP_BATCH):
+        stamped += db.rpc("stamp_last_seen",
+                          {"ids": item_ids[i:i + STAMP_BATCH],
+                           "day": today.isoformat()}) or 0
+    return stamped
+
+
 def changed(row: dict, got: dict, today: dt.date) -> dict | None:
-    """Build an update only if something actually moved."""
+    """Build an update only if something actually moved.
+
+    `last_seen` is not set here — see `stamp_alive`, which owns it.
+    """
     price = (got.get("price_SE") or {}).get("amount")
     fav = got.get("favouriteCount")
     reserved = got.get("isReserved")
@@ -178,7 +208,6 @@ def changed(row: dict, got: dict, today: dt.date) -> dict | None:
         "favourites": fav,
         "is_reserved": reserved,
         "last_chance": last_chance,
-        "last_seen": today.isoformat(),
     }
     # Flagged here, filled in later: the existing array is fetched only for the
     # rows that actually moved, not for all 666k.
@@ -272,11 +301,11 @@ def main() -> None:
     # that produced them is long gone — so carry the last known price along with the
     # id, rather than reaching back into a `by_id` that no longer exists.
     gone: dict[str, int | None] = {}
-    seen = written = 0
+    seen = written = stamped = 0
 
     for page in live_item_pages(limit=limit, after=resume_after):
         by_id = {r["item_id"]: r for r in page}
-        pending = []
+        pending, alive = [], []
         for chunk_ids, results in algolia.get_objects_parallel(list(by_id)):
             for item_id, got in zip(chunk_ids, results):
                 done += 1
@@ -284,6 +313,7 @@ def main() -> None:
                     gone[item_id] = by_id[item_id].get("price_ore")
                     continue
                 seen += 1
+                alive.append(item_id)
                 upd = changed(by_id[item_id], got, today)
                 if upd:
                     pending.append(upd)
@@ -291,18 +321,24 @@ def main() -> None:
                 written += flush(pending)
                 pending = []
         written += flush(pending)
+        # Before the checkpoint, for the same reason the writes are: a resume skips
+        # everything up to `last_item_id`, so anything not durable by then is lost.
+        stamped += stamp_alive(alive, today)
         # Checkpoint only once the page's writes are durable, so a resume can never
         # skip work that was recorded as done but never actually written.
         checkpoint_write(today, page[-1]["item_id"], done)
         print(f"  {done:,}/{total:,} checked, {written:,} written, "
-              f"{len(gone):,} gone", file=sys.stderr)
+              f"{stamped:,} stamped, {len(gone):,} gone", file=sys.stderr)
 
     # The read is complete, so an interruption from here on costs only the
     # adjudication, which the next pass redoes anyway.
     checkpoint_clear()
 
     print(f"\n{seen:,} still listed, {written:,} rows changed and written, "
-          f"{len(gone):,} disappeared")
+          f"{stamped:,} stamped alive, {len(gone):,} disappeared")
+    # `stamped` counts only rows whose `last_seen` actually moved, so on a normal pass
+    # it equals `seen`; re-running the same day stamps nothing. A number between the
+    # two, on a day the pass has not already run, means some pages never got stamped.
 
     if not gone:
         return
