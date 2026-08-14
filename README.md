@@ -16,6 +16,7 @@ been measured.
 | Path | What it is |
 |---|---|
 | `docs/overview.md` | **Start here.** What the idea is, how the business would work, the constraints, the theories and their standing, and how the crawler operates |
+| `docs/architecture.md` | How the system actually runs — sources, jobs, storage, ordering constraints, invariants |
 | `docs/schema.md` | Every column we collect, what it means, and the three that will mislead you |
 | `docs/handover.md` | The full design document: ideas, evidence, economics, open questions |
 | `docs/analytics.md` | What is derived after each pass — the predictor board, brand attention index, peer prices — and the three ways this data misleads |
