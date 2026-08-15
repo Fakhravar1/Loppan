@@ -51,6 +51,11 @@ on:
         type: boolean
         required: false
         default: false
+      runner:
+        description: Runner to use (auto = qvitta-pi if it is online, else hosted)
+        type: choice
+        default: auto
+        options: [auto, ubuntu-latest, qvitta-pi]
 
 concurrency:
   group: pool
@@ -69,8 +74,16 @@ jobs:
       - id: pick
         env:
           GH_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
+          CHOICE: ${{ inputs.runner }}
         run: |
           set -euo pipefail
+          # A pin also disarms the watchdog below, which is what stops a re-dispatch
+          # from re-arming it and looping.
+          if [ -n "${CHOICE:-}" ] && [ "${CHOICE}" != "auto" ]; then
+            echo "runner=${CHOICE}" >> "$GITHUB_OUTPUT"
+            echo "Runner pinned by dispatch input: ${CHOICE}"
+            exit 0
+          fi
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "::warning::RUNNER_STATUS_TOKEN is not set — routing to hosted."
             echo "runner=ubuntu-latest" >> "$GITHUB_OUTPUT"
@@ -91,6 +104,69 @@ jobs:
             echo "::warning::qvitta-pi is offline or busy — routing to hosted."
             echo "runner=ubuntu-latest" >> "$GITHUB_OUTPUT"
           fi
+
+  # The wedge this exists to prevent, observed 2026-08-14. `route` probed qvitta-pi,
+  # found it online and idle, and dispatched there — and the Pi's runner died in the
+  # seconds between the probe and the dispatch. The sweep then sat `queued` for
+  # GitHub's full 24 h before being cancelled, and because this workflow holds a
+  # concurrency group, all TEN sweeps behind it were cancelled while pending. A
+  # cancelled run has no jobs and therefore no logs, so 27 h of no pool sweep produced
+  # not one red tick. The pool went from 3 buckets swept that day to 21 of 24 sitting
+  # two days stale, and the dashboard served it without complaint.
+  #
+  # `timeout-minutes` cannot catch this: it counts execution time, and a queued job has
+  # none. Probing harder cannot either — the runner is alive when asked and dead when
+  # dispatched to, and no amount of asking earlier closes that race. It has to be
+  # caught from outside the job, after the fact, which is all this does.
+  watchdog:
+    needs: route
+    if: needs.route.outputs.runner != 'ubuntu-latest'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: write   # cancel this run, and re-dispatch it pinned to hosted
+    steps:
+      - name: Cancel and re-route if the Pi never picks the job up
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUCKET: ${{ inputs.bucket }}
+          TRACE: ${{ inputs.trace }}
+        run: |
+          set -euo pipefail
+          # qvitta-pi takes a job within seconds when it is alive, so ten minutes is
+          # already far outside normal. This is not waiting for a slow runner; it is
+          # waiting long enough to be sure the runner is gone.
+          deadline=$((SECONDS + 600))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            state=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
+              --jq '[.jobs[] | select(.name == "sweep")] | first | .status // "unknown"' \
+              2>/dev/null || echo "unknown")
+            case "$state" in
+              in_progress|completed)
+                echo "sweep is ${state} — qvitta-pi took the job. Nothing to do."
+                exit 0
+                ;;
+            esac
+            sleep 30
+          done
+          echo "::error::sweep sat queued for 10 minutes — qvitta-pi accepted the dispatch and then went away. Cancelling so the 'pool' concurrency group is not held for 24 h, and re-dispatching pinned to hosted."
+          # Dispatch BEFORE cancelling, because the cancel kills this job too. The new
+          # run waits on the concurrency group until the cancel below releases it.
+          #
+          # GITHUB_TOKEN is allowed to do this: `workflow_dispatch` is one of the two
+          # documented exceptions to "events triggered by GITHUB_TOKEN do not create a
+          # new workflow run". It looks like it should be blocked, and it is not.
+          #
+          # The re-dispatch arrives as `workflow_dispatch`, so the refresh gate below
+          # reads `refresh=true` and the recovery run also refreshes the whole pool.
+          # That is more work than the sweep it replaces, and after a gap it is the
+          # right more.
+          gh workflow run pool.yml --ref "${GITHUB_REF_NAME}" \
+            -f runner=ubuntu-latest \
+            -f bucket="${BUCKET:-}" \
+            -f trace="${TRACE:-false}" \
+            || echo "::warning::Re-dispatch failed — cancelling anyway. The rotation self-corrects, so the next scheduled sweep picks up whichever bucket has gone longest unswept."
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel"
 
   sweep:
     needs: route

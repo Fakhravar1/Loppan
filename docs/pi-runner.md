@@ -601,6 +601,74 @@ genuinely finished. **Move root to a USB SSD** — three incidents in a week on 
 Loppan now depends on is enough, and it retires this whole failure class rather than
 waiting for the next power cycle to postpone it again.
 
+## The fifth incident — 2026-08-14 — the card came back, and took the pool with it
+
+It came back the next day, exactly as the section above said it would. The 09:31 UTC
+sweep of bucket 11 died 62 minutes in with the now-familiar signature: **step stuck at
+`in_progress` with no conclusion**, and `jobs/<id>/logs` returning `BlobNotFound`. The
+runner died; the job did not fail.
+
+What was new is what happened next, and it is worse than the crash.
+
+### One dead runner, 27 hours of silence, zero red ticks
+
+At 11:12 UTC `route` probed the Pi, got `online` and `busy == false` — the
+`Runner.Listener` crash loop relaunches every ~75 s, so the box answers a probe
+truthfully and is dead again by the time the job arrives — and dispatched there. That
+job sat **`queued` for 23 h 37 m**.
+
+A queued job holds its workflow's concurrency group. `pool` runs `cancel-in-progress:
+false`, and GitHub keeps only one run pending per group, so each new scheduled sweep
+cancelled the previous pending one:
+
+| | |
+|---|---|
+| Last sweep that ran | 2026-08-14 **07:55 UTC** |
+| Sweeps cancelled behind the wedge | **10** |
+| Buckets swept 08-14 | 3 of 24 (8, 9, 10); the other 21 sat at 08-13 |
+| Red ticks generated | **none** |
+
+⚠️ **A cancelled run has no jobs, and therefore no logs.** That is why this was invisible
+for a day: the Actions tab showed grey, not red, and grey does not summon anybody. The
+rotation's two-day guarantee was breached on 21 buckets and the dashboard kept serving
+them without a word.
+
+It cleared itself at 11:12 the next day, when GitHub's 24 h queue limit finally
+cancelled the wedged job. The rotation then caught up on its own — twelve sweeps a day
+and "sweep whichever bucket has gone longest unswept" is what made that free — and by
+23:00 UTC all 24 buckets were current again and `sweep_staging` was empty.
+`sweep_pool.py` already clears leftover staging on entry (`clearing N rows left over
+from an interrupted run`), so the abandoned 27,500 bucket-11 rows cost nothing.
+
+### The guard, and why it has to look like this
+
+`pool.yml` and `track.yml` now carry a `watchdog` job. It runs hosted, only when `route`
+chose the Pi, and it watches the self-hosted job from the outside: if that job is still
+`queued` after **10 minutes**, it re-dispatches the workflow pinned to `ubuntu-latest`
+and then cancels the wedged run.
+
+Three things about it are deliberate, and each one is a thing that does not work:
+
+- **`timeout-minutes` cannot do this.** It counts execution time. A queued job has none,
+  so a 120-minute timeout expires never. This is stated in the `route` comments already
+  and is worth restating, because it is the natural first thing to reach for.
+- **A better probe cannot do this.** The race is between the probe and the dispatch. The
+  runner is genuinely alive when asked. Asking harder, or asking twice, narrows the
+  window and never closes it.
+- **The dispatch must precede the cancel.** Cancelling the run kills the watchdog too,
+  so a cancel-then-dispatch ordering never reaches the dispatch. The new run waits on
+  the concurrency group until the cancel releases it.
+
+The re-dispatch pins `runner`, which is what stops it re-arming the watchdog and
+looping: a pinned `route` returns `ubuntu-latest`, and the watchdog's `if:` is false.
+`GITHUB_TOKEN` is permitted to fire it — `workflow_dispatch` is one of the two
+documented exceptions to "events triggered by GITHUB_TOKEN do not create a new workflow
+run", which reads like a bug and is not.
+
+**This does not fix the Pi.** It converts a 24-hour silent outage into a ~10-minute
+delay and a loud red job, on billed minutes. The card is still the underlying fault and
+the recommendation above still stands: move root to a USB SSD.
+
 ## The sibling's runner is capped too (2026-08-08)
 
 Symmetry, not paranoia: `track` proved an unbounded job on this box takes the whole

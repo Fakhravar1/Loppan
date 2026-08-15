@@ -106,6 +106,49 @@ jobs:
             echo "runner=ubuntu-latest" >> "$GITHUB_OUTPUT"
           fi
 
+  # Same guard as pool.yml, for the same failure and the same reason — see the long
+  # note there. Short version: `route` can only tell you the Pi was alive a moment ago.
+  # If it dies between the probe and the dispatch, the job below does not fail, it sits
+  # `queued` for 24 h holding the `track` concurrency group, and nothing goes red.
+  #
+  # It costs more here than it does for the pool. The pool sweeps twelve times a day
+  # and its rotation self-corrects; `track` runs every other day, so one wedged run is
+  # a lost pass and a two-day hole in the price history. Hence the re-dispatch rather
+  # than just a cancel.
+  watchdog:
+    needs: route
+    if: needs.route.outputs.runner != 'ubuntu-latest'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: write   # cancel this run, and re-dispatch it pinned to hosted
+    steps:
+      - name: Cancel and re-route if the Pi never picks the job up
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 600))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            state=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
+              --jq '[.jobs[] | select(.name == "track")] | first | .status // "unknown"' \
+              2>/dev/null || echo "unknown")
+            case "$state" in
+              in_progress|completed)
+                echo "track is ${state} — qvitta-pi took the job. Nothing to do."
+                exit 0
+                ;;
+            esac
+            sleep 30
+          done
+          echo "::error::track sat queued for 10 minutes — qvitta-pi accepted the dispatch and then went away. Cancelling so the 'track' concurrency group is not held for 24 h, and re-dispatching pinned to hosted."
+          # Dispatch first: the cancel below kills this job too. Pinning the runner is
+          # what stops the new run from re-arming this watchdog and looping.
+          gh workflow run track.yml --ref "${GITHUB_REF_NAME}" \
+            -f runner=ubuntu-latest \
+            || echo "::warning::Re-dispatch failed — cancelling anyway. The pass resumes from its checkpoint on the next scheduled run."
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel"
+
   track:
     needs: route
     runs-on: ${{ needs.route.outputs.runner }}
