@@ -16,7 +16,7 @@ shortlist, by `loppan/shortlist.py` immediately after it. Both run as the closin
 python loppan/analytics.py
 ```
 
-Seven database calls, in order, all *after* `track.py`. The first five are the peer
+Eight database calls, in order, all *after* `track.py`. The first six are the peer
 rebuild, split out of what used to be a single `refresh_peer_prices()`:
 
 | | Function | Writes | Cost |
@@ -26,8 +26,12 @@ rebuild, split out of what used to be a single `refresh_peer_prices()`:
 | 3 | `score_peer_level(1)` | `peer_prices`, brand + garment + condition | ~10 s |
 | 4 | `score_peer_level(2)` | `peer_prices`, brand + category | ~8 s |
 | 5 | `score_peer_level(3)` | `peer_prices`, tier + garment | ~8 s |
-| 6 | `snapshot_predictors()` | `predictor_daily` | ~51 s |
-| 7 | `snapshot_brands()` | `brand_daily` | ~19 s |
+| 6 | `release_peer_live()` | empties `peer_live`, clears `peer_stage_state` | <1 s |
+| 7 | `snapshot_predictors()` | `predictor_daily` | ~51 s |
+| 8 | `snapshot_brands()` | `brand_daily` | ~19 s |
+
+Step 6 was added 2026-08-17 and is the only step here that exists for **disk** rather
+than for data. See "Releasing the shelf" below.
 
 `refresh_peer_prices()` still exists and still does all of 1–5 in one transaction. It is
 for running **by hand against the database**, where there is no gateway — it takes
@@ -131,6 +135,45 @@ the failure, not by reading the code.
 
 Verified after the split: 365,938 + 209,589 + 71,524 = **647,051 rows, identical to the
 single-call total**, worst step 14.1 s.
+
+### Releasing the shelf (step 6, added 2026-08-17)
+
+Making `peer_live` a real table instead of a temp table is what made the split possible,
+and it introduced a cost nobody accounted for: **a real table stays.** `peer_live` is one
+row per live item — 603,693 of them — and ~62 MB with its three indexes. The line above
+says it is "worthless after one [pass]", and that was true, but nothing emptied it. It
+sat at full size in the meantime, and since `track.yml` runs `30 4 */2 * *` the meantime
+is *two days out of every two days*. Those 62 MB were permanently allocated to a
+scratch table.
+
+That was a large part of what took the database to 642 MB against Supabase's 500 MB
+limit. `release_peer_live()` empties it once the three levels have scored;
+`stage_peer_live()` rebuilds it from `items` at the start of the next pass regardless, so
+the release costs nothing but the <1 s truncate.
+
+⚠️ **Clearing `peer_stage_state` is the substance of that function, not tidying up
+beside the truncate.** `score_peer_level()` guards with
+
+```sql
+select now() - staged_at into age from public.peer_stage_state;
+if age is null or age > interval '30 minutes' then raise exception
+```
+
+which reads the marker and **never inspects `peer_live`**. A fresh marker over an emptied
+table is therefore the one state in which scoring passes its own guard, finds nothing to
+score, inserts nothing, and returns 0 *as a success* — manufacturing precisely the silent
+failure the guard exists to prevent, for the 30 minutes after every pass. Clearing the
+marker lands the guard on its `age is null` branch, whose message is "was never staged
+… Run stage_peer_live() first" — true, and the right instruction, since that is the
+function which refills the table.
+
+Verified by simulation rather than by reading, per the standard the guards above set:
+after `release_peer_live()` returned 603,693, `score_peer_level(1)` raised
+`P0001: peer_live is stale or was never staged (age: never)`.
+
+The release is **inside** the `peer` chain, so a failed level skips it and leaves the
+table populated — which is the state a retry wants. Do not fold the truncate into
+`score_peer_level(3)`: a step that tidies up after itself is a step that cannot be re-run.
 
 A fourth step runs after these three, as its own script rather than part of
 `analytics.py`, because it is the only one that makes network requests:
