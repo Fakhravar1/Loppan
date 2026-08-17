@@ -24,7 +24,21 @@ name: pool sweep
 # does not run costs only slightly staler brand aggregates, not a broken pass.
 
 on:
-  schedule:
+  # ⏸️ PAUSED 2026-08-17 while qvitta-pi is down. The Pi stopped serving jobs at
+  # 2026-08-14T11:12Z; every run since fell back to hosted, and on a PRIVATE repo that
+  # bills. The fallback cost ~150 min/day (142 on the 15th, 159 on the 16th) against a
+  # 2,000 min/month pool shared with every other repo on the account -- pool sweep alone
+  # was 522 of the 834 hosted minutes spent 2026-08-04..17.
+  #
+  # TO RESUME: bring qvitta-pi back, confirm `route` logs "routing there (unbilled)",
+  # then uncomment `schedule:` and the cron below. The cost gate added to `route` in the
+  # same commit as this pause is what makes a resume safe even if the Pi is still down --
+  # it cuts hosted sweeps to the four 6-hourly slots instead of all twelve.
+  #
+  # workflow_dispatch stays live throughout: a human asking for a sweep still gets one,
+  # and that is the intended way to keep the rotation moving while this is paused.
+  #
+  # schedule:
     # Every two hours. 24 buckets at 12 runs a day is a two-day rotation, so nothing in
     # the pool is more than two days old -- faster than the three days that 12 buckets
     # at 4 runs gave, and each run stages half as much, which is what keeps peak RSS
@@ -39,7 +53,7 @@ on:
     # hour. Runs landing before track (04:30) and enrol (06:17 / 06:43) use the previous
     # day's `brand_daily`; `refresh_pool_bucket` takes `max(as_of) where as_of <= today`,
     # so that is slightly staler brand aggregates, not a broken pass.
-    - cron: "23 */2 * * *"
+    # - cron: "23 */2 * * *"
   workflow_dispatch:
     inputs:
       bucket:
@@ -65,35 +79,66 @@ jobs:
     timeout-minutes: 5
     outputs:
       runner: ${{ steps.pick.outputs.runner }}
+      sweep: ${{ steps.pick.outputs.sweep }}
     steps:
       - id: pick
         env:
           GH_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
         run: |
           set -euo pipefail
+          # One `runner` variable decided here and emitted once at the end, rather than a
+          # write-and-exit per branch. The cost gate below has to see the answer, and an
+          # early `exit 0` in the no-token branch used to skip everything after it.
+          runner=ubuntu-latest
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "::warning::RUNNER_STATUS_TOKEN is not set — routing to hosted."
-            echo "runner=ubuntu-latest" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          ready=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runners" \
-            --jq '[.runners[]
-                   | select(any(.labels[]; .name == "qvitta-pi"))
-                   | select(.status == "online" and .busy == false)] | length' \
-            2>/dev/null || echo "probe-failed")
-          if [ "$ready" = "probe-failed" ]; then
-            echo "::warning::Could not read runner status — routing to hosted."
-            echo "runner=ubuntu-latest" >> "$GITHUB_OUTPUT"
-          elif [ "$ready" -ge 1 ]; then
-            echo "qvitta-pi is online and idle — routing there (unbilled, and behind the VPN)."
-            echo "runner=qvitta-pi" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::qvitta-pi is offline or busy — routing to hosted."
-            echo "runner=ubuntu-latest" >> "$GITHUB_OUTPUT"
+            ready=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runners" \
+              --jq '[.runners[]
+                     | select(any(.labels[]; .name == "qvitta-pi"))
+                     | select(.status == "online" and .busy == false)] | length' \
+              2>/dev/null || echo "probe-failed")
+            if [ "$ready" = "probe-failed" ]; then
+              echo "::warning::Could not read runner status — routing to hosted."
+            elif [ "$ready" -ge 1 ]; then
+              echo "qvitta-pi is online and idle — routing there (unbilled, and behind the VPN)."
+              runner=qvitta-pi
+            else
+              echo "::warning::qvitta-pi is offline or busy — routing to hosted."
+            fi
+          fi
+          echo "runner=$runner" >> "$GITHUB_OUTPUT"
+
+          # Cost gate. On the Pi a sweep is unbilled, so it runs at full cadence. Routed
+          # hosted it is not, and the full cadence does not fit the budget:
+          #
+          #   12 runs/day x 7.0 min (measured mean over 9 passes) = 84 min/day
+          #                                                       ~ 2,520 min/month
+          #   free pool, shared across every repo on the account  = 2,000 min/month
+          #
+          # -- and that is before track (~400), cohort (~45) and enrol (~45). So a
+          # fallback that was meant to keep the pool fresh during an outage would quietly
+          # spend the sibling's minutes too, and the longer the Pi is down the worse it
+          # gets. Hosted runs are therefore cut to the four 6-hourly slots, which is the
+          # cadence pool_refresh already uses and which keeps the rotation moving at a
+          # third of the cost.
+          #
+          # workflow_dispatch is never gated: a human asking for a sweep gets a sweep.
+          h=$(date -u +%H)
+          if [ "$runner" = "qvitta-pi" ] \
+             || [ "${{ github.event_name }}" != "schedule" ] \
+             || [ $((10#$h % 6)) -eq 0 ]; then
+            echo "sweep=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "sweep=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Routed hosted and hour ${h} UTC is not a 6-hourly slot — skipping this sweep to protect the shared free-minutes pool. Sweeps run at 00/06/12/18 while the Pi is down."
           fi
 
   sweep:
     needs: route
+    # Gated at the JOB level, not the step level, so a skipped sweep costs nothing at
+    # all -- no runner allocation, no checkout. See the cost gate in `route`.
+    if: needs.route.outputs.sweep == 'true'
     runs-on: ${{ needs.route.outputs.runner }}
     timeout-minutes: 120
     steps:
