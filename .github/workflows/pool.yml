@@ -24,21 +24,34 @@ name: pool sweep
 # does not run costs only slightly staler brand aggregates, not a broken pass.
 
 on:
-  # ⏸️ PAUSED 2026-08-17 while qvitta-pi is down. The Pi stopped serving jobs at
-  # 2026-08-14T11:12Z; every run since fell back to hosted, and on a PRIVATE repo that
-  # bills. The fallback cost ~150 min/day (142 on the 15th, 159 on the 16th) against a
-  # 2,000 min/month pool shared with every other repo on the account -- pool sweep alone
-  # was 522 of the 834 hosted minutes spent 2026-08-04..17.
+  # Paused 2026-08-17 12:0xZ, resumed 2026-08-17 12:5xZ. Kept as a record because the
+  # sixth outage cost real money and did not look like the five before it.
   #
-  # TO RESUME: bring qvitta-pi back, confirm `route` logs "routing there (unbilled)",
-  # then uncomment `schedule:` and the cron below. The cost gate added to `route` in the
-  # same commit as this pause is what makes a resume safe even if the Pi is still down --
-  # it cuts hosted sweeps to the four 6-hourly slots instead of all twelve.
+  # qvitta-pi's runner stopped mid-sweep on 08-14 and `route` fell back to hosted, as
+  # designed -- but this is a PRIVATE repo, so hosted bills, and the fallback ran at the
+  # Pi's full 12-a-day cadence. 522 of the 834 hosted minutes spent 08-04..17 were this
+  # workflow: ~150 min/day (142 on the 15th, 159 on the 16th) against a 2,000 min/month
+  # pool shared with every repo on the account. The cost gate now in `route` is the
+  # standing fix; this pause was only to stop the bleed while the Pi was diagnosed.
   #
-  # workflow_dispatch stays live throughout: a human asking for a sweep still gets one,
-  # and that is the intended way to keep the rotation moving while this is paused.
+  # ⚠️ Two claims made during that diagnosis were wrong, and the corrections are the
+  # useful part:
   #
-  # schedule:
+  #   - "The Pi stopped serving jobs at 08-14T11:12Z" is false. That job never ran: its
+  #     `runner_name` is empty and it was cancelled at 08-15T11:14Z, 24 h 2 min after
+  #     being queued -- the exact trap the `route` comment below describes. The Pi's last
+  #     real work was the sweep that began 08-14T09:31:08Z and never logged a completion.
+  #
+  #   - It was not the SD fault from crashes 4 and 5. dmesg had ZERO `I/O error` and zero
+  #     `Got data interrupt`, and `exit code 135` was 0 in every _diag log except 08-13's.
+  #     The service simply went silent mid-job for three days: no error, no SIGBUS, no
+  #     listener relaunch. `systemctl restart` brought it straight back. Cause unknown --
+  #     do not reach for the SD card next time without checking dmesg first.
+  #
+  # Resumed because the runner is online and the gate makes a re-failure cheap: `route`
+  # re-probes every run, so if the Pi goes quiet again the fallback is four 6-hourly
+  # slots (~40 min/day), not twelve.
+  schedule:
     # Every two hours. 24 buckets at 12 runs a day is a two-day rotation, so nothing in
     # the pool is more than two days old -- faster than the three days that 12 buckets
     # at 4 runs gave, and each run stages half as much, which is what keeps peak RSS
@@ -53,7 +66,7 @@ on:
     # hour. Runs landing before track (04:30) and enrol (06:17 / 06:43) use the previous
     # day's `brand_daily`; `refresh_pool_bucket` takes `max(as_of) where as_of <= today`,
     # so that is slightly staler brand aggregates, not a broken pass.
-    # - cron: "23 */2 * * *"
+    - cron: "23 */2 * * *"
   workflow_dispatch:
     inputs:
       bucket:
