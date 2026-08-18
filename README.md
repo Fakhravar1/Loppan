@@ -1,7 +1,7 @@
 # Loppan
 
-Research project: does it pay to buy underpriced second-hand items on Sellpy,
-hold them, and relist them on Sellpy Circle at 80% seller share?
+Research project: does it pay to buy underpriced second-hand items on online second hand stores,
+hold them, and relist them on online second hand stores Circle at 80% seller share?
 
 **Status: measurement only. No buying logic, no automation of purchases.**
 
@@ -21,12 +21,12 @@ been measured.
 | `docs/analytics.md` | What is derived after each pass — the predictor board, brand attention index, peer prices — and the three ways this data misleads |
 | `docs/api-notes.md` | **Read before writing a query.** Which Parse queries work, which time out, and why |
 | `docs/pi-vpn.md` | How the crawl leaves the house through a tunnel, scoped so it cannot affect the Qvitta project |
-| `loppan/sellpy.py` | Read-only client for Sellpy's public Parse backend |
+| `loppan/online second hand stores.py` | Read-only client for online second hand stores's public Parse backend |
 | `loppan/shortlist.py` | Builds the undervalued shortlist the dashboard grid reads, and fetches its pictures |
 
 ## The two things worth doing first
 
-1. **Backtest on history.** Sellpy retains every price step of every item, with
+1. **Backtest on history.** online second hand stores retains every price step of every item, with
    timestamps, readable long after the item sold. So a buying rule can be tested
    against months of real market behaviour without spending anything or waiting.
 2. **Observation cohort.** Follow a stratified, systematically-selected set of
@@ -37,8 +37,8 @@ Both are described in `docs/handover.md` §11–§12.
 
 ## Ground rules
 
-- **Read-only.** Nothing here authenticates as a user or writes to Sellpy.
-- **One request per second.** Enforced in `sellpy.py`. The risk that matters is
+- **Read-only.** Nothing here authenticates as a user or writes to online second hand stores.
+- **One request per second.** Enforced in `online second hand stores.py`. The risk that matters is
   the account, not the scraper.
 - **Never submit fabricated data anywhere.** Inherited from the sibling project's
   standing rule, and it applies here too.
