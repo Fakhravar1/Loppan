@@ -18,7 +18,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from loppan import cohort, sellpy
+from loppan import cohort, market
 
 DATA = pathlib.Path(__file__).resolve().parent.parent / "data"
 
@@ -104,7 +104,7 @@ def main() -> None:
         if not item_id:
             continue
         try:
-            row = summarise_ladder(item_id, item, sellpy.ladder(item_id))
+            row = summarise_ladder(item_id, item, market.ladder(item_id))
         except Exception as exc:  # never let one bad item kill a long run
             print(f"  {item_id}: {type(exc).__name__}", file=sys.stderr)
             continue

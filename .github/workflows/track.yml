@@ -55,6 +55,17 @@ concurrency:
   group: track
   cancel-in-progress: false   # a half-written pass is worse than a late one
 
+# Marketplace endpoints. These are public values, but they are kept out of the
+# repository so the source does not name the target; see loppan/endpoints.py.
+# They are repository VARIABLES, not secrets:
+#   Settings -> Secrets and variables -> Actions -> Variables.
+# A missing one fails the run at the first request with a clear NotConfigured.
+env:
+  LOPPAN_MARKET_API: ${{ vars.LOPPAN_MARKET_API }}
+  LOPPAN_MARKET_GRAPHQL: ${{ vars.LOPPAN_MARKET_GRAPHQL }}
+  LOPPAN_MARKET_SITE: ${{ vars.LOPPAN_MARKET_SITE }}
+  LOPPAN_MARKET_IMAGE_HOSTS: ${{ vars.LOPPAN_MARKET_IMAGE_HOSTS }}
+
 jobs:
   route:
     # Decides where the pass runs, because GitHub will not decide sensibly on its

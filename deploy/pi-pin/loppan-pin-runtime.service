@@ -1,0 +1,44 @@
+[Unit]
+# Pins the Loppan runner's .NET runtime into RAM so it is never re-read from the SD
+# card. See docs/pi-runner.md, "The fifth crash".
+#
+# The failure this prevents: Runner.Worker mmaps libcoreclr.so at every job start. If
+# those pages have been evicted, they are demand-paged off the card, and a read that the
+# card cannot complete in time becomes SIGBUS -- the job dies with exit 135 before a
+# single step runs, and the log blob is never uploaded.
+#
+# Why eviction happens to Loppan and not to Qvitta: page cache for a file is charged to
+# the cgroup of the process that read it. The Loppan runner sits under MemoryHigh=300M
+# and runs every 2 h, so it reclaims its own executables between passes. The sibling has
+# 450M and runs every 15 min, so its copy stays warm and its card reads never happen.
+# Measured 2026-08-13, 30 min after a boot with the runner active: 55.8% resident.
+#
+# This does not repair anything. It means the damaged region is never read. The bad
+# blocks themselves are held out of the free pool by the quarantine file
+# bin/libcoreclr.so.badblocks-20260813, which is chattr +i for that reason.
+Description=Pin the Loppan runner's .NET runtime in RAM
+After=local-fs.target
+
+[Service]
+# Foreground, NOT vmtouch -d: mlock is released when the locking process exits, so the
+# process has to stay alive to hold it. Type=simple lets systemd supervise that.
+Type=simple
+
+# mlock is bounded by RLIMIT_MEMLOCK, which defaults far below the ~20 MB needed here.
+LimitMEMLOCK=infinity
+
+# Deliberately NOT in either runner's cgroup, for the same reason loppan-trail is not:
+# mlocked pages are charged to whoever locked them, and charging 20 MB to the cgroup
+# that is already tight on MemoryHigh would defeat the purpose.
+ExecStart=/usr/bin/vmtouch -l \
+  /opt/actions-runner-loppan/bin/libcoreclr.so \
+  /opt/actions-runner-loppan/bin/System.Private.CoreLib.dll \
+  /opt/actions-runner-loppan/bin/libSystem.Native.so \
+  /opt/actions-runner-loppan/bin/Runner.Worker.dll \
+  /opt/actions-runner-loppan/bin/Runner.Listener.dll
+
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

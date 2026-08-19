@@ -1,10 +1,10 @@
 """First look at ladder data: does anything visible at listing time predict outcome?
 
-Important about what this can and cannot show. These are **Sellpy-side** outcomes —
-what items cleared for on Sellpy, not what they would fetch on Circle. The whole
+Important about what this can and cannot show. These are **the marketplace-side** outcomes —
+what items cleared for on the marketplace, not what they would fetch on Circle. The whole
 strategy rests on the gap between those two, and this file cannot see it.
 
-What it *can* test is the detector: are there items Sellpy prices below what the
+What it *can* test is the detector: are there items the marketplace prices below what the
 market will immediately pay? The fingerprint of that is an item selling **fast**
 and with **little or no markdown** — nobody had a chance to decline it. That is
 exactly the shape of the COS coat in the known trades (2 rungs, 13 days).
@@ -54,7 +54,7 @@ def main() -> None:
     if not done:
         return
 
-    show("Sellpy's own sell-through, by opening-ask band")
+    show("the marketplace's own sell-through, by opening-ask band")
     print(f"{'band':16s} {'n':>5s} {'sold':>6s} {'rate':>6s} {'med rungs':>10s} {'med days':>9s} {'med decay':>10s}")
     for name in ("low (<400)", "mid (400-1499)", "high (>=1500)"):
         grp = [r for r in done if band(r["opening_ask"]) == name]
@@ -76,7 +76,7 @@ def main() -> None:
     if slow:
         print(f"  slow-sale opening asks: median {statistics.median(r['opening_ask'] for r in slow):.0f} kr")
 
-    show("Does Sellpy's own sell-score predict whether it actually sold?")
+    show("Does the marketplace's own sell-score predict whether it actually sold?")
     scored = [r for r in done if r["score"] is not None]
     if scored:
         ss = [r["score"] for r in scored if r["sold"]]
@@ -88,8 +88,8 @@ def main() -> None:
         if ss and ns:
             gap = statistics.mean(ss) - statistics.mean(ns)
             verdict = "no signal" if abs(gap) < 0.03 else "the score carries real signal"
-            print(f"  gap {gap:+.3f}  ({verdict} for Sellpy-side sell-through)")
-            print("  NB: predicting whether Sellpy sells it is not the same as")
+            print(f"  gap {gap:+.3f}  ({verdict} for the marketplace-side sell-through)")
+            print("  NB: predicting whether the marketplace sells it is not the same as")
             print("  predicting whether it is a profitable buy. In the four known")
             print("  trades the two highest-scoring items were the two worst trades.")
 
@@ -113,7 +113,7 @@ def main() -> None:
                       f"median opening {statistics.median(r['opening_ask'] for r in grp):.0f} kr")
 
     show("Caveat")
-    print("These are Sellpy-side clearing outcomes. They test whether underpriced")
+    print("These are the marketplace-side clearing outcomes. They test whether underpriced")
     print("items are detectable. They say nothing about the Circle resale premium,")
     print("which is where the four known trades made their money.")
 
