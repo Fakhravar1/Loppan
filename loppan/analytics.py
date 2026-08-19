@@ -79,12 +79,26 @@ SETTLE_POLL_S = 10
 # exist, the levels refuse against staging older than 30 minutes. Belt and braces on
 # purpose: this is the one place in the project where getting the order wrong destroys
 # data that cannot be recovered.
+#
+# `release_peer_live` is last in the chain and is the only step that exists for disk
+# rather than for data. `peer_live` is ~603,000 rows and ~62 MB with its indexes, is
+# worthless once the three levels have scored, and was never emptied -- so it sat at
+# full size between passes. Since this script runs every OTHER day, that was 62 MB held
+# permanently, and it is a large part of what put the database over Supabase's 500 MB
+# limit. Releasing it costs nothing: `stage_peer_live` rebuilds it from `items` at the
+# start of every pass regardless.
+#
+# It is in the chain rather than outside it so that a failed level LEAVES the table
+# populated -- that is the state a retry needs, and `stage_peer_live` would rebuild it
+# anyway. Do not "improve" this by moving the truncate into score_peer_level(3): a step
+# that also tidies up after itself is a step that cannot be re-run.
 STEPS = [
     ("freeze_peer_prices",  {},                 "resolved items frozen",   "peer"),
     ("stage_peer_live",     {},                 "live rows staged",        "peer"),
     ("score_peer_level",    {"p_level": 1},     "items scored at level 1", "peer"),
     ("score_peer_level",    {"p_level": 2},     "items scored at level 2", "peer"),
     ("score_peer_level",    {"p_level": 3},     "items scored at level 3", "peer"),
+    ("release_peer_live",   {},                 "live rows released",      "peer"),
     ("snapshot_predictors", {"p_as_of": AS_OF}, "feature rows written",    None),
     ("snapshot_brands",     {"p_as_of": AS_OF}, "brands snapshotted",      None),
 ]
