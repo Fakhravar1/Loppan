@@ -57,8 +57,12 @@ The rest of this file already includes them.
    plan on **3–6M live items** until the census in Phase 2 measures it. §8 is redone on
    that basis. BigQuery still costs only a few dollars. The real constraint moves to
    collection time (§5).
+   **Measured 2026-10-02 by the fetcher:** 10,275,128 live clothing and shoe listings
+   at all prices. The 150 kr floor and the §12 rule cut that substantially; the exact
+   in-scope count comes from the census. Fetching by id turned out far cheaper than
+   feared (§5 step 2), so collection time is not the constraint after all.
 2. **Track known items by id; only search for new ones.** Re-searching the whole market
-   every day cannot see past ~2,000 results per query shape, and an incomplete shape
+   every day cannot see past ~2,400 results per query shape, and an incomplete shape
    looks exactly like a mass sale. Instead, fetch every known live id with
    `get_objects_parallel` (100 per request). A missing id is unambiguous. Only items
    listed since the last run need search, filtered on `firstOfferedAt_SE`.
@@ -171,13 +175,17 @@ search new listings (Algolia) ───────────────┘  
 ```
 
 1. **Read live ids** from the `NULL` partition. 5M ids is ~50 MB, which is negligible.
-2. **Fetch by id**: `algolia.get_objects_parallel`, 100 per request. The 2026-08-08 pass
-   did 666k items in 26.8 min. At 3–6M that is **~2–4 hours**, inside GitHub's 6-hour job
-   limit but not comfortably. Shard into a matrix by `item_id` hash once it passes ~4 h.
-   Set `attributesToRetrieve` to the fields we store.
-3. **Search new listings**: `firstOfferedAt_SE` since the last run, minus a day of
-   overlap, fanned out by category so no query shape passes ~2,000 results. Apply the
-   brand filter here.
+2. **Fetch by id**: `bq_fetch.py track`, over `algolia.get_objects_parallel` (100 per
+   request, `attributesToRetrieve` limited to stored fields). **Measured 2026-10-02:
+   0.53–0.60 s per 1,000 ids**, limited by the throttle at ~20 requests/s, so a full pass
+   is **~25–30 min at 3M and ~50–60 min at 6M**. The 2026-08-08 pass took 26.8 min for
+   666k only because it also wrote to Supabase. No sharding is needed. A chunk that
+   errors counts as *not fetched*, never as missing (tested).
+3. **Search new listings**: `bq_fetch.py new`, `firstOfferedAt_SE` since the last run
+   minus a day of overlap. `bq_shapes.py` splits on `createdAt` (price as a fallback)
+   into leaves of at most 1,000 hits and checks every leaf is exhaustive. Apply the price
+   floor and the brand rule here. A few live items (7 in 30,563) carry no
+   `firstOfferedAt_SE`, so only the census can find them.
 4. **Load** both into `sweep_staging` with a batch load job, which is free.
 5. **Merge.** New ids are inserted. Known ids get a price and favourite element appended
    *only if the value changed*, and `last_seen` and `updated_run` are stamped.
@@ -201,8 +209,10 @@ search new listings (Algolia) ───────────────┘  
    partition, not the table. Partition pruning inside `MERGE` depends on how the filter
    is written. Verify it rather than assuming.
 6. **Adjudicate** every id that came back missing, or with `isForSale` false, against
-   Parse (`track.adjudicate`, 60 ids per request, serial at 1 req/s). Roughly 25–50k
-   resolutions a day is **~7–14 minutes**. **Skipped entirely if step 2 fetched < 99.5%**
+   Parse (`bq_fetch.py adjudicate`, 60 ids per request, serial at 1 req/s). Measured
+   inflow at all prices is 51k–181k listings a day, which would be up to ~50 minutes;
+   the floor and brand rule cut it to the in-scope share. An id in a batch that errored
+   gets no row at all, so a failed request never becomes an `unknown`. **Skipped entirely if step 2 fetched < 99.5%**
    (§3, change 3).
 7. **Resolve**: a second `MERGE` writes `outcome`, `resolved_on` and `final_price_ore`.
    The row moves out of the live partition.
@@ -307,7 +317,10 @@ thousands and the prior has effectively no weight.
 
 Estimates, to be replaced with measurements after Phase 2. They assume 3–6M live items,
 roughly 25–50k listed per day (so 9–18M items seen per year), and ~0.5 KB per item at
-resolution.
+resolution. ⚠️ **Measured inflow at all prices is 51k–181k a day** (110–180k on
+weekdays), against the assumed 25–50k. The 150 kr floor removes roughly 40–60% and the
+§12 rule about half of the rest, which lands near the assumption. Redo this table with
+the census's in-scope count. Staging rows measured 470–570 bytes, as assumed.
 
 | | Year 1 | Year 3 |
 |---|---|---|
@@ -374,6 +387,14 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
       placeholder's exact label, found during Phase 2)
 
 **Phase 2 — Census seed (one-off)**
+- [x] Fetcher built and sample-tested on branch `bigquery-fetch` (2026-10-02):
+      `bq_fetch.py` census / track / new / adjudicate / origins / brands / validate,
+      stdlib only, no Supabase import (tested). Samples loaded into BigQuery from
+      Actions three times, all green
+- [ ] Brand scope in SQL (§12 day-one plan): a `brand_scope` table from staged medians,
+      and `merge_sweep.sql` enrolling only in-scope, non-NULL brands
+- [ ] Fetcher emits `item_status` (adjudication) and `bought_on` (origins), added to
+      the contract after the fetcher was built
 - [ ] Fan-out search over brand × category × price band to enrol every live,
       brand-filtered item. Assert every query shape is exhaustive
 - [ ] **Measure:** live count, bytes per row, listings per day over the first week.
@@ -498,9 +519,11 @@ market the top N covers, and where adding more brands stops changing the shortli
 
 Three details that make it work:
 
-- **The unbranded placeholder is excluded explicitly.** Whatever the marketplace calls
-  an item with no brand is likely to rank *high* on frequency, so the "common" gate
-  would let it in. Exclude it by name before ranking.
+- **Unbranded items are excluded as `brand IS NULL`.** There is no placeholder label:
+  measured 2026-10-02, an unbranded item has no brand key at all, in the index and in
+  Parse, so it never appears in the brand facet. That is up to 27.7% of listings. Its
+  `brand_tier` is meaningless, because the marketplace still attaches a price point.
+  `brand_exclusions` is for named brands only.
 - **Day one has no sold prices.** We start fresh, so on day one the "expensive" gate
   uses the brand's **median live ask** from Algolia, with `brand_tier` as a tiebreak. Live
   asks run higher than sold prices (unsold items linger at high asks), so the stand-in
@@ -512,6 +535,15 @@ Three details that make it work:
   their outcome.** Dropping them mid-life would delete exactly the unsold items and bias
   sell-through upward.
 
-Availability comes from Algolia brand facet counts (`algolia.brand_facets`). The facet
-list is truncated at ~1,000 values (`analytics.md`), which is harmless here because only
-the top few hundred matter for the "common" gate.
+Availability comes from `bq_fetch.py brands`, which sums counts over 470 parts that are
+each small enough to count exactly. One query over the whole scope only estimates.
+Measured 2026-10-02 over 10.3M live clothing and shoe listings: the top 50 brands cover
+35.1%, 100 43.5%, **150 48.6%**, 200 52.3%, 300 57.5%.
+
+**The facet limit matters for the expensive gate.** The brand facet stops at ~1,000
+values, and medians were priced for the top 700 only. There, 108 brands passed
+≥ 200 kr, 13 of them already in the top 150, so 245 brands covered 51.5% of listings.
+Rare expensive brands below rank 700 were not priced. **Day-one plan:** census
+everything ≥ 150 kr into `sweep_staging` without a brand filter, compute every brand's
+median ask in SQL, and let `merge_sweep.sql` enrol only in-scope brands. Staging expires
+in 7 days, so the out-of-scope rows cost nothing lasting.

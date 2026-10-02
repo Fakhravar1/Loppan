@@ -15,7 +15,8 @@ WHEN MATCHED AND t.circle_origin IS NULL THEN UPDATE SET
   circle_origin = STRUCT(s.original_id AS original_id,
                          s.bought_price_ore AS bought_price_ore,
                          s.opening_ore AS opening_ore,
-                         s.rungs AS rungs);
+                         s.rungs AS rungs),
+  circle_bought_on = s.bought_on;
 
 -- Outcomes. Gated on the run's completeness (§3, change 3): unless the latest runs row
 -- for @run allows it, nothing resolves. A partial fetch must never become a wave of

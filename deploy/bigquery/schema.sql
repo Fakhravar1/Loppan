@@ -215,3 +215,24 @@ USING (
 ) s
 ON t.rule = s.rule
 WHEN NOT MATCHED THEN INSERT (rule, value, note) VALUES (s.rule, s.value, s.note);
+
+-- 2026-10-02, from the fetcher's findings ──────────────────────────────────────
+
+-- Parse's raw itemStatus beside the verdict, so the reason for an 'unknown' (and
+-- distinctions the verdict folds together) survives.
+ALTER TABLE loppan.adjudication_staging ADD COLUMN IF NOT EXISTS item_status STRING
+  OPTIONS (description = "Parse itemStatus as returned, before mapping to outcome");
+
+-- When the reseller bought the original. origin_of returns it; it was being dropped.
+ALTER TABLE loppan.circle_origin_staging ADD COLUMN IF NOT EXISTS bought_on DATE;
+
+-- A top-level column, not a new circle_origin field: DDL cannot add a field to an
+-- existing STRUCT column.
+ALTER TABLE loppan.items ADD COLUMN IF NOT EXISTS circle_bought_on DATE
+  OPTIONS (description = "Circle only: the date the reseller bought the original");
+
+ALTER TABLE loppan.items ALTER COLUMN category SET OPTIONS (
+  description = "Category path as enrol.row_of reads it: the first level-2 path, three levels deep. A fourth level exists and is not kept");
+
+ALTER TABLE loppan.brand_exclusions SET OPTIONS (
+  description = "Named brands always out of scope. Unbranded items have no brand at all (brand IS NULL) and are excluded by that rule, not by a row here");

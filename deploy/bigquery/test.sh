@@ -111,8 +111,8 @@ VALUES ('$D3', 'A', 'track', FALSE, CURRENT_TIMESTAMP(), NULL, NULL),
 INSERT loppan._t_adjudication_staging (run_date, item_id, outcome, final_price_ore, adjudicated_at)
 VALUES ('$D3', 'A', 'sold', 27000, CURRENT_TIMESTAMP());
 INSERT loppan._t_circle_origin_staging (run_date, item_id, original_id, bought_price_ore,
-  opening_ore, rungs, fetched_at)
-VALUES ('$D3', 'B', 'B0', 12000, 40000, 6, CURRENT_TIMESTAMP());
+  opening_ore, rungs, fetched_at, bought_on)
+VALUES ('$D3', 'B', 'B0', 12000, 40000, 6, CURRENT_TIMESTAMP(), DATE_SUB('$D3', INTERVAL 30 DAY));
 INSERT loppan._t_runs (run_date, finished_at, live_ids, fetched, completeness, resolve_allowed)
 VALUES ('$D3', TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR), 1000, 990, 0.99, FALSE);
 EOF
@@ -127,6 +127,8 @@ ASSERT (SELECT ARRAY_LENGTH(price_history) FROM loppan._t_items WHERE item_id = 
   AS 'B markdown on day 3';
 ASSERT (SELECT circle_origin.bought_price_ore FROM loppan._t_items WHERE item_id = 'B') = 12000
   AS 'Circle origin written';
+ASSERT (SELECT circle_bought_on FROM loppan._t_items WHERE item_id = 'B') = DATE_SUB('$D3', INTERVAL 30 DAY)
+  AS 'Circle purchase date written';
 EOF
 pass "day 3: completeness gate holds, missing is not sold, Circle origin"
 
