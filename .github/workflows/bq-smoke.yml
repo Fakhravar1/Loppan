@@ -43,6 +43,6 @@ jobs:
       - name: Write — the dataset grant holds
         run: |
           bq --location=EU query --use_legacy_sql=false \
-            'create or replace table loppan._smoke as select current_timestamp() as at'
+            'create or replace table loppan._smoke as select current_timestamp() as created_at'
           bq show --format=prettyjson loppan._smoke | grep -E '"(numRows|location)"'
           bq rm -f -t loppan._smoke
