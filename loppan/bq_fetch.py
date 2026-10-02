@@ -353,6 +353,88 @@ def cmd_new(a) -> int:
     return 0 if res["complete"] else 2
 
 
+# ---------------------------------------------------------------- Parse: adjudicate, origins
+
+
+def cmd_adjudicate(a) -> int:
+    """adjudication_staging rows for ids that left the index or stopped being for
+    sale. Strictly serial, 60 ids per request, at the Parse client's interval.
+
+    Written: sold | expired | unknown. NOT written, so they stay live: still_listed,
+    ids whose request failed (no answer yet), and ids Parse has no offer for.
+    final_price_ore is Parse's last ask; the resolve MERGE may fall back to the
+    item's last seen price where it is null, as track.py did.
+    """
+    ids = read_ids(a.ids)
+    out = NDJSON(a.out)
+    t0 = time.time()
+    counts = {"sold": 0, "expired": 0, "unknown": 0, "still_listed": 0,
+              "failed": 0, "unaccounted": 0}
+    statuses: dict[str, int] = {}
+    for i in range(0, len(ids), outcomes.ADJUDICATE):
+        chunk = ids[i:i + outcomes.ADJUDICATE]
+        verdicts, failed = outcomes.adjudicate_detailed(chunk)
+        at = utc_now()
+        counts["failed"] += len(failed)
+        for item_id in chunk:
+            v = verdicts.get(item_id)
+            if v is None:
+                counts["unaccounted"] += 0 if item_id in failed else 1
+                continue
+            verdict, final, status = v
+            counts[verdict] += 1
+            statuses[str(status)] = statuses.get(str(status), 0) + 1
+            if verdict == "still_listed":
+                continue
+            out.write({"run_date": a.run_date, "item_id": item_id, "outcome": verdict,
+                       "final_price_ore": final, "adjudicated_at": at})
+    secs = time.time() - t0
+    requests = -(-len(ids) // outcomes.ADJUDICATE)
+    emit_summary({"ids": len(ids), **counts, "item_status": statuses,
+                  "requests": requests, "seconds": round(secs, 2),
+                  "requests_per_s": round(requests / secs, 2) if secs else None,
+                  "output": out.close()}, a.summary)
+    return 0
+
+
+def cmd_origins(a) -> int:
+    """circle_origin_staging rows: what each Circle seller paid. Strictly serial;
+    two Parse requests per linked item. A listing with no `preceding` pointer gets a
+    row with a null original_id, which records that it was looked at; a request
+    that fails gets no row, so it is asked again next run."""
+    ids = read_ids(a.ids)
+    out = NDJSON(a.out)
+    t0 = time.time()
+    linked = unlinked = no_ladder = failed = 0
+    for item_id in ids:
+        try:
+            o = outcomes.origin_of(item_id)
+        except Exception as exc:
+            failed += 1
+            print(f"  {item_id}: {type(exc).__name__}", file=sys.stderr)
+            continue
+        if o is None:
+            unlinked += 1
+            o = {}
+        elif o.get("bought_price_ore") is None:
+            no_ladder += 1
+        else:
+            linked += 1
+        out.write({"run_date": a.run_date, "item_id": item_id,
+                   "original_id": o.get("original_id"),
+                   "bought_price_ore": o.get("bought_price_ore"),
+                   "opening_ore": o.get("original_opening_ore"),
+                   "rungs": o.get("original_rungs"), "fetched_at": utc_now()})
+    secs = time.time() - t0
+    requests = failed + unlinked + 2 * (linked + no_ladder)    # at most; failures vary
+    emit_summary({"ids": len(ids), "with_price": linked, "linked_no_ladder": no_ladder,
+                  "no_preceding": unlinked, "failed": failed, "requests": requests,
+                  "seconds": round(secs, 2),
+                  "requests_per_s": round(requests / secs, 2) if secs else None,
+                  "output": out.close()}, a.summary)
+    return 0
+
+
 # ---------------------------------------------------------------- validate
 
 
@@ -401,6 +483,16 @@ def main(argv: list[str] | None = None) -> int:
     searching(sp)
     sp.add_argument("--since", required=True, help="YYYY-MM-DD, UTC; include a day of overlap")
     sp.set_defaults(fn=cmd_new)
+
+    sp = sub.add_parser("adjudicate", help="Parse verdicts (adjudication_staging)")
+    common(sp)
+    sp.add_argument("--ids", required=True, help="adjudication candidates, one per line")
+    sp.set_defaults(fn=cmd_adjudicate)
+
+    sp = sub.add_parser("origins", help="Circle purchase prices (circle_origin_staging)")
+    common(sp)
+    sp.add_argument("--ids", required=True, help="Circle (p2p) item ids, one per line")
+    sp.set_defaults(fn=cmd_origins)
 
     sp = sub.add_parser("validate", help="check an NDJSON file against schema.sql")
     sp.add_argument("file")
