@@ -1,0 +1,71 @@
+name: bq-daily
+
+# Loppan's daily sweep into BigQuery: deploy/bigquery/daily.sh (docs/bigquery.md §5).
+#   schedule           daily mode, 02:00 UTC (04:00 Stockholm summer time). Fires only
+#                      from the default branch.
+#   workflow_dispatch  any mode: daily | census (the one-off backfill) | origins (the
+#                      Circle-origin backlog, in chunks)
+#   push               only on the bigquery-daily branch, when this file or daily.sh
+#                      changes, in PUSH_MODE: how the pipeline was proven before merge
+#
+# Runs as loppan-pipeline through Workload Identity Federation, like every bq-* job.
+# bq-health.yml checks the next morning that a run happened and passed the gate.
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: daily | census | origins
+        type: choice
+        options: [daily, census, origins]
+        default: daily
+      origins_max:
+        description: Circle origins to fetch this run (Parse is serial, ~2 s each)
+        default: "1500"
+  push:
+    branches: [bigquery-daily]
+    paths:
+      - .github/workflows/bq-daily.yml
+      - deploy/bigquery/daily.sh
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: bq-daily
+  cancel-in-progress: false
+
+env:
+  PUSH_MODE: origins  # the mode a push to bigquery-daily runs
+  PUSH_ORIGINS_MAX: "6000"   # ~3.3 h of serial Parse calls, inside the 330 min limit (2nd batch)
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Run
+        env:
+          MODE: ${{ github.event_name == 'push' && env.PUSH_MODE || inputs.mode || 'daily' }}
+          ORIGINS_MAX: ${{ github.event_name == 'push' && env.PUSH_ORIGINS_MAX || inputs.origins_max || '1500' }}
+          OUT_DIR: ${{ runner.temp }}/bq-run
+        run: |
+          mkdir -p "$OUT_DIR"
+          bash deploy/bigquery/daily.sh "$MODE"

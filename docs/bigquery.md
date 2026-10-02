@@ -398,20 +398,39 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
       Actions three times, all green
 - [x] Kosher list in SQL: `kosher_brands`, `brand_counts_staging`, `kosher.sql`, and
       `merge_sweep.sql` enrolling only kosher brands. Tested
-- [ ] `bq_fetch.py brands` counting at ≥ 150 kr and writing `brand_counts_staging` NDJSON
+- [x] `bq_fetch.py brands` counting at ≥ 150 kr and writing `brand_counts_staging` NDJSON.
+      A shape is a leaf only when its counts are exhaustive *and* its brand facet list
+      is under 1,000 values, so no brand is cut off; exit 2 if any shape falls short
 - [x] Fetcher dates in Stockholm time (`first_offered`, `run_date`, `new --since`),
       plus `item_status`, `bought_on` and the `below_floor` flag. Branch
       `bigquery-fetch` at a5d042c, 21 tests, Actions sample load green
 - [ ] `bought_on` is still Parse's UTC date (`outcomes.origin_of`), so a purchase in the
       last hour or two before UTC midnight lands on the wrong Stockholm day
 - [x] Brand rule decided: the kosher list (§12), replacing the median gate
-- [ ] Fan-out search over brand × category × price band to enrol every live,
-      brand-filtered item. Assert every query shape is exhaustive
-- [ ] **Measure:** live count, bytes per row, listings per day over the first week.
-      Redo §8 with the measured values
+- [x] **Census backfill, 2026-10-02** (`bq-daily.yml` census mode, run 37034445772,
+      12.5 min, 2.99 GiB billed). Brand counts: 73,395 brands counted exactly, **6,779
+      kosher**. Census: 2,504,815 live items read at ≥ 150 kr, every shape exhaustive.
+      238,007 were skipped as not kosher and 58,706 as unbranded. **2,266,808 enrolled**,
+      against 2,266,566 expected from the kosher brand counts (~100.0%). No price under
+      15,000 öre, no unbranded item, and no non-kosher brand in `items`
+- [x] Circle-origin backlog: 11,146 Circle items enrolled without a purchase price,
+      worked through in `origins` mode at ~2 s an item (6,000 a run), plus 1,500 a day
+      in daily mode
+- [ ] **Measure:** bytes per row and listings per day over the first week. Redo §8
+      with the measured values
 
 **Phase 3 — Daily run**
-- [ ] Steps 1–8 of §5 as one workflow, with the 99.5% completeness gate
+- [x] `daily.sh` + `bq-daily.yml`: steps 1–8 of §5 with the 99.5% completeness gate.
+      **First daily run 2026-10-02** (run 37036030968, 76 min, 3.78 GiB billed): live
+      ids read in 92 s; track 2,266,808 ids at **completeness 1.0**, 0.50 s per 1,000,
+      19 min; new listings since 30 Sep 167,483 found in 42 s; 263 adjudicated in 10 s;
+      1,500 Circle origins in 50 min; resolve + model 45 s. It ran on the census's own
+      date, so the `updated_run` guard skipped same-day updates, as designed. The 527
+      items already under 150 kr close on the next day's run
+- [ ] Cron live from `main` (02:00 UTC daily), watched by `bq-health` and a morning
+      Claude check
+- [ ] `shortlist_candidates` hits the 30,000 cap on day one only because a few hundred
+      sales price everything. Treat it as meaningless until weeks of sales exist
 - [x] `merge_sweep.sql` and `merge_resolve.sql` (Circle origins, then gated outcomes),
       tested by `test.sh` in `bq-schema.yml` on synthetic rows: a rerun is a no-op,
       updates append only on change, duplicate source rows collapse, a stray tracked
@@ -419,7 +438,7 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
       Green on run 37011068601, 2026-10-02
 - [ ] Dry-run bytes on real volume. On synthetic rows the merge read 375 of 468
       table bytes, which proves nothing at that size
-- [ ] Fetcher on branch `bigquery-fetch` (in progress)
+- [x] Fetcher on branch `bigquery-fetch` (PR Fakhravar1/Loppan#4)
 
 **Phase 4 — Model and shortlist**
 - [x] `model.sql` builds `seasonal_index`, `price_level`, `sell_through` and
