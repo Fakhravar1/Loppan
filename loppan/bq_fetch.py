@@ -29,7 +29,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 # Every client import for the BigQuery path is here or in outcomes.py, so the
 # rename on the market-rename branch touches one line.
-from loppan import algolia, bq_schema, outcomes
+from loppan import algolia, bq_schema, bq_shapes, outcomes
 
 RESOLVE_GATE = 0.995      # docs/bigquery.md §3 change 3
 SEASON_BITS = {"Vår": 1, "Sommar": 2, "Höst": 4, "Vinter": 8}
@@ -296,6 +296,63 @@ def cmd_track(a) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- search: new, census
+
+
+def read_brands(path: str | None) -> set[str] | None:
+    if not path:
+        return None
+    with open(path, encoding="utf-8-sig") as fh:
+        return {line.rstrip("\n\r") for line in fh if line.strip()}
+
+
+def crawl_to_rows(crawl: bq_shapes.Crawl, out: NDJSON, run_date: str, source: str,
+                  brands: set[str] | None) -> dict:
+    """Run a crawl, writing one row per distinct live item. With a brand set, items
+    of other brands, and unbranded ones, are counted and dropped."""
+    seen: set[str] = set()
+    tally = {"duplicates": 0, "dropped_by_brand": 0, "unbranded": 0}
+
+    def on_hits(hits):
+        at = utc_now()
+        for h in hits:
+            item_id = h.get("objectID")
+            if not item_id or item_id in seen:
+                tally["duplicates"] += 1
+                continue
+            seen.add(item_id)
+            brand = (h.get("metadata") or {}).get("brand")
+            if not brand:
+                tally["unbranded"] += 1
+            if brands is not None and brand not in brands:
+                tally["dropped_by_brand"] += 1
+                continue
+            out.write(sweep_row(run_date, item_id, source, True, at, h))
+
+    report = crawl.run(on_hits)
+    report.update(tally, distinct_items=len(seen))
+    return report
+
+
+def since_ms(day: str) -> int:
+    return int(dt.datetime.fromisoformat(day).replace(tzinfo=dt.UTC).timestamp() * 1000)
+
+
+def cmd_new(a) -> int:
+    """Items first offered on or after --since (UTC midnight), live, in scope."""
+    dims = [bq_shapes.Dim("firstOfferedAt_SE", since_ms(a.since), bq_shapes.FAR * 1000,
+                          always=True),
+            bq_shapes.Dim("price_SE.amount", 0, 10 ** 9)]
+    crawl = bq_shapes.Crawl("isForSale:true", bq_shapes.scope(a.categories), dims,
+                            HIT_ATTRS, max_leaves=a.max_leaves)
+    out = NDJSON(a.out)
+    res = crawl_to_rows(crawl, out, a.run_date, "new", read_brands(a.brands))
+    res["output"] = out.close()
+    res["new_found"] = res["output"]["rows"]
+    emit_summary(res, a.summary)
+    return 0 if res["complete"] else 2
+
+
 # ---------------------------------------------------------------- validate
 
 
@@ -329,6 +386,21 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--retries", type=int, default=1,
                     help="extra passes over ids whose chunk got no answer")
     sp.set_defaults(fn=cmd_track)
+
+    def searching(sp):
+        sp.add_argument("--categories", nargs="+", default=algolia.WEARABLE,
+                        help="category paths in scope, any level (default: clothing and "
+                             "shoes, all demographies)")
+        sp.add_argument("--brands", help="file of in-scope brand names, one per line; "
+                                         "other brands and unbranded items are dropped")
+        sp.add_argument("--max-leaves", type=int,
+                        help="stop after this many leaf shapes (for sample runs)")
+
+    sp = sub.add_parser("new", help="items listed since a date (sweep_staging, source=new)")
+    common(sp)
+    searching(sp)
+    sp.add_argument("--since", required=True, help="YYYY-MM-DD, UTC; include a day of overlap")
+    sp.set_defaults(fn=cmd_new)
 
     sp = sub.add_parser("validate", help="check an NDJSON file against schema.sql")
     sp.add_argument("file")
