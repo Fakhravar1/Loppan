@@ -88,13 +88,15 @@ SELECT CAST(NULL AS STRING), category, n, med, med
 FROM c;
 
 -- ─── sell_through ───────────────────────────────────────────────────────────
+-- The share that sold at or above the floor. below_floor counts as not sold: it was
+-- marked down past 150 kr without selling, which is what a reseller needs to know.
 -- 'unknown' outcomes are left out of both sides rather than counted as either.
 
 CREATE OR REPLACE TABLE loppan.sell_through AS
 WITH r AS (
   SELECT brand, category, outcome
   FROM loppan.items
-  WHERE outcome IN ('sold', 'expired')
+  WHERE outcome IN ('sold', 'expired', 'below_floor')
     AND resolved_on >= DATE_SUB(@run, INTERVAL window_days DAY)
 ),
 bc AS (

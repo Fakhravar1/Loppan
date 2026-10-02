@@ -5,6 +5,14 @@
 -- appends nothing. Reads only the live partition of items (resolved_on IS NULL).
 -- Ids that came back empty (present = false) are ignored here; adjudication decides
 -- what happened to them.
+--
+-- 150 kr is a hard filter (§12): no price under min_price_kr is ever stored. An item
+-- under it never enrols, and a tracked item marked down under it is closed as
+-- below_floor with its last price at or above the floor. The fetcher flags these rows
+-- itself; the price comparison here is the backstop.
+
+DECLARE floor_ore INT64 DEFAULT CAST(
+  (SELECT value FROM loppan.brand_rules WHERE rule = 'min_price_kr') * 100 AS INT64);
 
 MERGE loppan.items t
 USING (
@@ -17,6 +25,13 @@ USING (
     PARTITION BY item_id ORDER BY IF(source = 'track', 0, 1), fetched_at DESC) = 1
 ) s
 ON t.item_id = s.item_id AND t.resolved_on IS NULL
+
+WHEN MATCHED AND (t.updated_run IS NULL OR t.updated_run < @run)
+     AND (IFNULL(s.below_floor, FALSE) OR s.price_ore < floor_ore) THEN UPDATE SET
+  outcome     = 'below_floor',
+  resolved_on = @run,
+  last_seen   = @run,
+  updated_run = @run
 
 WHEN MATCHED AND (t.updated_run IS NULL OR t.updated_run < @run) THEN UPDATE SET
   price_history = IF(s.price_ore IS NOT NULL AND s.price_ore IS DISTINCT FROM t.price_ore,
@@ -34,7 +49,8 @@ WHEN MATCHED AND (t.updated_run IS NULL OR t.updated_run < @run) THEN UPDATE SET
 
 -- Only search results enrol. A tracked id with no live row means the id list and the
 -- table disagree, which is a bug to surface, not a row to invent.
-WHEN NOT MATCHED BY TARGET AND s.source IN ('new', 'census') THEN INSERT (
+WHEN NOT MATCHED BY TARGET AND s.source IN ('new', 'census')
+     AND s.price_ore >= floor_ore THEN INSERT (
   item_id, brand, brand_tier, category, item_type, demography, size_code, condition,
   has_defect, fabric, pattern, materials, colours, season_mask, weight_g, p2p,
   first_offered, first_seen, last_seen, history_complete, updated_run,

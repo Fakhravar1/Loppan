@@ -514,12 +514,15 @@ as JSON strings.
 | **Expensive**: brand median sold price ≥ `min_median_sold_kr` | Dear brands, however rare | 200 kr |
 | **Common**: brand is in the top `top_n_brands` by live listings | Cheap brands that sell in volume | 150 |
 
-**And a price floor, added 2026-10-02:** an item enrols only if its asking price is
-**≥ `min_price_kr` (150 kr)**. Like the brand gates, it applies **at enrolment only**.
-A tracked item that a markdown takes below 150 kr is followed to its outcome. Dropping
-it would delete exactly the marked-down items that then sell, which biases
-sell-through, as with brands below. The cost of the rule is known and accepted: a dear
-brand's item that is *already* under 150 kr when first seen is never enrolled.
+**And a hard price floor, 2026-10-02: nothing under 150 kr is ever stored.**
+`min_price_kr` = 150. An item under it never enrols. When a markdown takes a tracked
+item under it, the fetcher sends no price (`below_floor = TRUE` in staging) and
+`merge_sweep.sql` closes the row with outcome **`below_floor`**, keeping its last price
+at or above the floor. A price comparison in the merge is the backstop, and `test.sh`
+asserts that no current or historical price under 15,000 öre exists. Sell-through
+counts `below_floor` as **not sold**: the item was marked down past 150 kr without
+selling, which is exactly what a reseller needs counted. Leaving it out would bias
+sell-through upward. The floor is separate from the brand medians below.
 
 What falls out is the **cheap *and* rare** long tail, which is what "no-name" meant in
 practice. Both values are parameters in a `brand_rules` table, not constants in code.

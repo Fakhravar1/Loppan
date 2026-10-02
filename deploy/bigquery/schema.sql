@@ -236,3 +236,17 @@ ALTER TABLE loppan.items ALTER COLUMN category SET OPTIONS (
 
 ALTER TABLE loppan.brand_exclusions SET OPTIONS (
   description = "Named brands always out of scope. Unbranded items have no brand at all (brand IS NULL) and are excluded by that rule, not by a row here");
+
+-- 2026-10-02: 150 kr is a hard filter. No price under it is ever stored ─────────────
+
+-- Set by the fetcher when a tracked item's price is now under min_price_kr. It then
+-- writes no price for that row. merge_sweep.sql closes the item as below_floor.
+ALTER TABLE loppan.sweep_staging ADD COLUMN IF NOT EXISTS below_floor BOOL
+  OPTIONS (description = "A tracked item now priced under min_price_kr. Its price is not written");
+
+ALTER TABLE loppan.items ALTER COLUMN outcome SET OPTIONS (
+  description = "NULL while listed; sold | expired | unknown from Parse adjudication; below_floor when a markdown took it under min_price_kr, closed without storing that price");
+
+UPDATE loppan.brand_rules
+SET note = 'Hard filter: no item or price under this is ever stored. A tracked item marked down below it is closed as below_floor'
+WHERE rule = 'min_price_kr';
