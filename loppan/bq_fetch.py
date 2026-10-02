@@ -79,6 +79,15 @@ def _date_ms(ms) -> str | None:
     return dt.datetime.fromtimestamp(ms / 1000, dt.UTC).date().isoformat()
 
 
+def _iso_day(v) -> str | None:
+    """A YYYY-MM-DD string that is a real date, else None: one malformed date from
+    a source must not fail the whole load."""
+    try:
+        return dt.date.fromisoformat(v).isoformat() if isinstance(v, str) and len(v) == 10 else None
+    except ValueError:
+        return None
+
+
 def _int(v) -> int | None:
     if isinstance(v, bool) or v is None:
         return None
@@ -500,7 +509,8 @@ def cmd_origins(a) -> int:
     """circle_origin_staging rows: what each Circle seller paid. Strictly serial;
     two Parse requests per linked item. A listing with no `preceding` pointer gets a
     row with a null original_id, which records that it was looked at; a request
-    that fails gets no row, so it is asked again next run."""
+    that fails gets no row, so it is asked again next run. bought_on is the day the
+    original's last price step ended, as origin_of reads it."""
     ids = read_ids(a.ids)
     out = NDJSON(a.out)
     t0 = time.time()
@@ -523,7 +533,8 @@ def cmd_origins(a) -> int:
                    "original_id": o.get("original_id"),
                    "bought_price_ore": o.get("bought_price_ore"),
                    "opening_ore": o.get("original_opening_ore"),
-                   "rungs": o.get("original_rungs"), "fetched_at": utc_now()})
+                   "rungs": o.get("original_rungs"), "fetched_at": utc_now(),
+                   "bought_on": _iso_day(o.get("bought_on"))})
     secs = time.time() - t0
     requests = failed + unlinked + 2 * (linked + no_ladder)    # at most; failures vary
     emit_summary({"ids": len(ids), "with_price": linked, "linked_no_ladder": no_ladder,

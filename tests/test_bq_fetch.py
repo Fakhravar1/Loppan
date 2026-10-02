@@ -349,6 +349,35 @@ class Parse(unittest.TestCase):
             "bare": ("unknown", None, 18000)})       # still listed and no-offer: no row
         self.assertEqual(list(rows[0])[-1], "item_status")
 
+    def test_origins_write_bought_on(self):
+        items = {"linked": {"preceding": {"objectId": "o1"}},
+                 "badDay": {"preceding": {"objectId": "o2"}},
+                 "noLadder": {"preceding": {"objectId": "o3"}},
+                 "unlinked": {}}
+        ladders = {
+            "o1": [{"pricing": {"amount": 400}},
+                   {"pricing": {"amount": 120},
+                    "endedAt": {"__type": "Date", "iso": "2026-09-01T10:15:00.000Z"}}],
+            "o2": [{"pricing": {"amount": 300}, "endedAt": "not a date"}],
+            "o3": []}
+
+        def item(object_id):
+            if object_id == "boom":
+                raise OSError("connection reset")
+            return items[object_id]
+
+        self.parse.item = item
+        self.parse.ladder = lambda item_id, region="SE": ladders[item_id]
+        with contextlib.redirect_stderr(io.StringIO()):
+            rows = run_cli("circle_origin_staging", [*items, "boom"], "origins")
+        got = {r["item_id"]: (r["original_id"], r["bought_price_ore"], r["bought_on"])
+               for r in rows}
+        self.assertEqual(got, {"linked": ("o1", 12000, "2026-09-01"),
+                               "badDay": ("o2", 30000, None),
+                               "noLadder": ("o3", None, None),
+                               "unlinked": (None, None, None)})     # boom: no row
+        self.assertEqual(list(rows[0])[-1], "bought_on")
+
 
 class NoDatabase(unittest.TestCase):
     def test_fetch_path_never_imports_db(self):
