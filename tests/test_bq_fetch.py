@@ -4,6 +4,7 @@
 """
 
 import contextlib
+import datetime as dt
 import io
 import json
 import os
@@ -377,6 +378,84 @@ class Parse(unittest.TestCase):
                                "noLadder": ("o3", None, None),
                                "unlinked": (None, None, None)})     # boom: no row
         self.assertEqual(list(rows[0])[-1], "bought_on")
+
+
+def utc(*args) -> dt.datetime:
+    return dt.datetime(*args, tzinfo=dt.UTC)
+
+
+def ms(t: dt.datetime) -> int:
+    return int(t.timestamp() * 1000)
+
+
+class Stockholm(unittest.TestCase):
+    """Dates are Stockholm days, from the tz database or, without one, the fixed rule.
+    Every test runs both ways."""
+
+    def setUp(self):
+        self.tz = bq_fetch.STOCKHOLM
+
+    def tearDown(self):
+        bq_fetch.STOCKHOLM = self.tz
+
+    def both(self, check):
+        for tz in ([self.tz] if self.tz else []) + [None]:
+            bq_fetch.STOCKHOLM = tz
+            with self.subTest(source="tz database" if tz else "fixed rule"):
+                check()
+
+    def test_listing_just_after_local_midnight(self):
+        def check():
+            for after, before, day in [
+                    (utc(2026, 7, 14, 22, 5), utc(2026, 7, 14, 21, 55), "2026-07-15"),  # CEST
+                    (utc(2026, 1, 14, 23, 5), utc(2026, 1, 14, 22, 55), "2026-01-15")]:  # CET
+                row = bq_fetch.sweep_row("2026-10-02", "a", "new", True, "2026-10-02T00:00:00Z",
+                                         dict(HIT, firstOfferedAt_SE=ms(after)))
+                self.assertEqual(row["first_offered"], day)
+                early = bq_fetch.sweep_row("2026-10-02", "a", "new", True, "2026-10-02T00:00:00Z",
+                                           dict(HIT, firstOfferedAt_SE=ms(before)))
+                self.assertLess(early["first_offered"], day)
+                self.assertEqual(bq_fetch.today_local(after), day)      # run_date
+                self.assertEqual(bq_fetch.today_local(before), early["first_offered"])
+        self.both(check)
+
+    def test_since_starts_at_stockholm_midnight(self):
+        # 2026 changes: summer time from Sunday 29 March, winter time from Sunday 25 October
+        def check():
+            for day, start in [("2026-07-15", utc(2026, 7, 14, 22)),
+                               ("2026-01-15", utc(2026, 1, 14, 23)),
+                               ("2026-03-29", utc(2026, 3, 28, 23)),
+                               ("2026-03-30", utc(2026, 3, 29, 22)),
+                               ("2026-10-25", utc(2026, 10, 24, 22)),
+                               ("2026-10-26", utc(2026, 10, 25, 23))]:
+                self.assertEqual(bq_fetch.since_ms(day), ms(start), day)
+        self.both(check)
+
+    @unittest.skipUnless(bq_fetch.STOCKHOLM, "no tz database here to compare against")
+    def test_fixed_rule_matches_the_tz_database(self):
+        tz = self.tz
+        instants = [utc(2023, 12, 1) + dt.timedelta(hours=h) for h in range(37_000)]
+        for y in range(2024, 2028):                # a second either side of each change
+            for change in (bq_fetch._last_sunday(y, 3), bq_fetch._last_sunday(y, 10)):
+                at = dt.datetime.combine(change, dt.time(1), dt.UTC)
+                instants += [at - dt.timedelta(seconds=1), at]
+        for t in instants:
+            self.assertEqual(bq_fetch._cet_offset(t), t.astimezone(tz).utcoffset(), t)
+            bq_fetch.STOCKHOLM = None
+            fixed = bq_fetch.local_date(t)
+            bq_fetch.STOCKHOLM = tz
+            self.assertEqual(fixed, bq_fetch.local_date(t), t)
+        day = dt.date(2024, 1, 1)
+        while day < dt.date(2028, 1, 1):
+            bq_fetch.STOCKHOLM = None
+            fixed = bq_fetch.local_midnight(day)
+            bq_fetch.STOCKHOLM = tz
+            self.assertEqual(fixed, bq_fetch.local_midnight(day), day)
+            day += dt.timedelta(days=1)
+
+    def test_timestamps_stay_utc(self):
+        self.assertTrue(bq_fetch.utc_now().endswith("Z"))
+        dt.datetime.fromisoformat(bq_fetch.utc_now().replace("Z", "+00:00"))
 
 
 class NoDatabase(unittest.TestCase):

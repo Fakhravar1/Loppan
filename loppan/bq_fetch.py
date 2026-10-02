@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import time
+import zoneinfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
@@ -62,21 +63,62 @@ HIT_ATTRS = STATE_ATTRS + [
 
 
 def utc_now() -> str:
+    """Timestamps (fetched_at, adjudicated_at, started_at) stay UTC, ending in Z."""
     return dt.datetime.now(dt.UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def today_utc() -> str:
-    return dt.datetime.now(dt.UTC).date().isoformat()
+# Dates (run_date, first_offered, the `new --since` boundary) are Stockholm calendar
+# days, whatever zone the runner is in. From the tz database when the runner has
+# one; otherwise from the fixed EU rule below, which is what the database says for
+# Stockholm for every year since 1996.
+try:
+    STOCKHOLM: zoneinfo.ZoneInfo | None = zoneinfo.ZoneInfo("Europe/Stockholm")
+except (zoneinfo.ZoneInfoNotFoundError, OSError, ValueError):
+    STOCKHOLM = None
+
+
+def _last_sunday(year: int, month: int) -> dt.date:
+    d = dt.date(year, month, 31)            # March and October both have 31 days
+    return d - dt.timedelta(days=(d.weekday() + 1) % 7)
+
+
+def _cet_offset(utc: dt.datetime) -> dt.timedelta:
+    """CEST (UTC+2) from 01:00 UTC on the last Sunday of March to 01:00 UTC on the
+    last Sunday of October; CET (UTC+1) otherwise. `utc` must be aware."""
+    start = dt.datetime.combine(_last_sunday(utc.year, 3), dt.time(1), dt.UTC)
+    end = dt.datetime.combine(_last_sunday(utc.year, 10), dt.time(1), dt.UTC)
+    return dt.timedelta(hours=2 if start <= utc < end else 1)
+
+
+def local_date(utc: dt.datetime) -> dt.date:
+    """The Stockholm calendar day of an aware instant."""
+    if STOCKHOLM is not None:
+        return utc.astimezone(STOCKHOLM).date()
+    utc = utc.astimezone(dt.UTC)
+    return (utc + _cet_offset(utc)).date()
+
+
+def local_midnight(day: dt.date) -> dt.datetime:
+    """The UTC instant at which `day` begins in Stockholm. Midnight is never inside a
+    clock change (those happen at 02:00 and 03:00 local), so it exists exactly once."""
+    if STOCKHOLM is not None:
+        return dt.datetime.combine(day, dt.time(), STOCKHOLM).astimezone(dt.UTC)
+    naive = dt.datetime.combine(day, dt.time(), dt.UTC)
+    return naive - _cet_offset(naive - dt.timedelta(hours=1))
+
+
+def today_local(now: dt.datetime | None = None) -> str:
+    return local_date(now or dt.datetime.now(dt.UTC)).isoformat()
 
 
 def _date_ms(ms) -> str | None:
-    """Epoch milliseconds -> UTC date. UTC, not the runner's zone: enrol._date used
-    the local zone, which makes the same item's date depend on where it ran."""
+    """Epoch milliseconds -> Stockholm date. Never the runner's zone: enrol._date
+    used that, which makes the same item's date depend on where it ran."""
     if not isinstance(ms, (int, float)) or isinstance(ms, bool) or ms <= 0:
         return None
     if ms < 1e11:            # seconds, not milliseconds
         ms *= 1000
-    return dt.datetime.fromtimestamp(ms / 1000, dt.UTC).date().isoformat()
+    return local_date(dt.datetime.fromtimestamp(ms / 1000, dt.UTC)).isoformat()
 
 
 def _iso_day(v) -> str | None:
@@ -385,7 +427,8 @@ def crawl_to_rows(crawl: bq_shapes.Crawl, out: NDJSON, run_date: str, source: st
 
 
 def since_ms(day: str) -> int:
-    return int(dt.datetime.fromisoformat(day).replace(tzinfo=dt.UTC).timestamp() * 1000)
+    """Epoch ms of Stockholm midnight starting `day` (YYYY-MM-DD)."""
+    return int(local_midnight(dt.date.fromisoformat(day)).timestamp() * 1000)
 
 
 FLOOR_SQL = "select value from loppan.brand_rules where rule = 'min_price_kr'"
@@ -447,7 +490,7 @@ def search_crawl(a, first_dim: bq_shapes.Dim, source: str) -> int:
 
 
 def cmd_new(a) -> int:
-    """Items first offered on or after --since (UTC midnight)."""
+    """Items first offered on or after --since, from midnight in Stockholm."""
     return search_crawl(a, bq_shapes.Dim("firstOfferedAt_SE", since_ms(a.since),
                                          bq_shapes.FAR * 1000, always=True), "new")
 
@@ -578,8 +621,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="command", required=True)
 
     def common(sp, out=True):
-        sp.add_argument("--run-date", default=today_utc(),
-                        help="run_date for every row (default: today, UTC)")
+        sp.add_argument("--run-date", default=today_local(),
+                        help="run_date for every row (default: today in Stockholm)")
         sp.add_argument("--summary", help="also write the JSON summary here")
         if out:
             sp.add_argument("--out", required=True, help="NDJSON file to write")
@@ -619,7 +662,8 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("new", help="items listed since a date (sweep_staging, source=new)")
     common(sp)
     searching(sp)
-    sp.add_argument("--since", required=True, help="YYYY-MM-DD, UTC; include a day of overlap")
+    sp.add_argument("--since", required=True,
+                    help="YYYY-MM-DD, a Stockholm day; include a day of overlap")
     sp.set_defaults(fn=cmd_new)
 
     sp = sub.add_parser("adjudicate", help="Parse verdicts (adjudication_staging)")
