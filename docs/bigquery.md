@@ -350,8 +350,10 @@ habits that keep it there:
       `projects/839195135409/locations/global/workloadIdentityPools/github/providers/loppan-repo`
 - [x] GitHub repo variables (not secrets; none of these is secret): `GCP_PROJECT_ID`,
       `GCP_WIF_PROVIDER`, `GCP_SERVICE_ACCOUNT`, set 2026-10-02
-- [ ] Smoke test passes: `.github/workflows/bq-smoke.yml` (reads as the service
-      account, then creates and drops `loppan._smoke` to prove the dataset grant)
+- [x] Smoke test passes: `.github/workflows/bq-smoke.yml` reads as the service account
+      (`session_user()` = `loppan-pipeline@…`), then creates and drops `loppan._smoke`
+      in `EU` to prove the dataset grant. Green on run 37002433291, 2026-10-02. The first
+      run failed only because `AT` is a reserved word. Auth was fine from the start
 
 All of the above was done 2026-10-02 from Cloud Shell. The script is
 `~/loppan_setup.sh` in that Cloud Shell home directory.
