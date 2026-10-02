@@ -1,7 +1,7 @@
 """Retroactive seasonality: what cleared, in which month, at what discount.
 
 The forward cohort cannot answer this. It was enrolled on a single date, so it can
-only show behaviour from that date onward. Sellpy's price history reaches back
+only show behaviour from that date onward. The marketplace's price history reaches back
 years and covers every month, so the seasonal question — is a winter coat cheaper
 in July than in November — is answerable today rather than in a year.
 
@@ -31,7 +31,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from loppan import cohort, db, search, sellpy
+from loppan import cohort, db, market, search
 
 DATA = pathlib.Path(__file__).resolve().parent.parent / "data"
 OFFERS = DATA / "season_offers.jsonl"
@@ -69,14 +69,14 @@ def scan() -> dict[str, dict]:
         skip = 0
         while skip <= MAX_SKIP:
             try:
-                batch = sellpy.find(
+                batch = market.find(
                     "MarketOffer",
                     {"region": "SE", "latest": True},
                     limit=PAGE,
                     skip=skip,
                     include="item",
                 )
-            except sellpy.QueryTooSlow:
+            except market.QueryTooSlow:
                 print(f"  skip={skip}: timed out, stopping the scan", file=sys.stderr)
                 break
             if not batch:
@@ -120,7 +120,7 @@ def pull_ladders(items: list[dict]) -> None:
     with LADDERS.open("a", encoding="utf-8") as fh:
         for n, item in enumerate(todo, 1):
             try:
-                path = cohort._path(sellpy.ladder(item["objectId"]))
+                path = cohort._path(market.ladder(item["objectId"]))
             except Exception as exc:
                 print(f"  {item['objectId']}: {type(exc).__name__}", file=sys.stderr)
                 continue

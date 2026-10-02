@@ -1,4 +1,4 @@
-"""Enrol a brand-stratified sample of the Sellpy catalogue for outcome tracking.
+"""Enrol a brand-stratified sample of the marketplace catalogue for outcome tracking.
 
 The sampling problem. The population is ~6.6M clothing and shoe listings at or
 above 100 kr. The top 1,000 brands hold 59% of it and Zara alone holds 162,000, so
@@ -12,7 +12,7 @@ So two strata, with weights recorded so population estimates stay possible:
      no brand dominates, deep enough to fit per-brand effects.
   B  a pooled walk of the population, keeping only items whose brand fell below the
      floor. Not balanced by brand — it exists so the long tail is represented at
-     all. That matters because Idea 2 says the profit comes from Sellpy's pricing
+     all. That matters because Idea 2 says the profit comes from the marketplace's pricing
      ERRORS, and errors should be commonest on obscure brands their model has least
      data for. Dropping the tail would discard the likeliest source of edge.
 
@@ -332,7 +332,7 @@ def stratum_n(target: int, dry: bool) -> int:
     listing has its opening price recorded by definition, so its ENTIRE price path
     from first ask to final sale is observable.
 
-    That is what makes Idea 2 testable: "Sellpy priced it wrong on day one" requires
+    That is what makes Idea 2 testable: "the marketplace priced it wrong on day one" requires
     the day-one price, which only this stratum reliably has.
 
     `firstOfferedAt_SE` is the true listing date and is numerically filterable.

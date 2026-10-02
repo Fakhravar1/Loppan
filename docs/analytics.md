@@ -190,7 +190,7 @@ per-brand columns — so it must come last. See §8.
 ## 2. The peer freeze, and the bug it replaces
 
 `peer_prices` answers "is this item cheap for its kind?" — the empirical stand-in for
-Sellpy's value estimate, which per `overview.md` §6 exists on only ~5% of the market.
+The marketplace's value estimate, which per `overview.md` §6 exists on only ~5% of the market.
 
 It was rebuilt from live items every pass, and the rebuild **truncated first**. So the
 moment an item sold, its peer position was deleted. On 2026-08-08 the damage was exact:
@@ -313,7 +313,7 @@ its arrival is visible, not because it currently says anything.
 The three brand-classification features are the sharpest illustration of why the two
 targets are kept apart. `brand_tier` is the second-strongest thing in the database for
 explaining **price** (2.98×, tier 6 asks 784 kr against tier 1's 173 kr) and close to
-worthless for predicting a **sale** (1.56×, and tier 2 outsells tier 6). Sellpy's tier
+worthless for predicting a **sale** (1.56×, and tier 2 outsells tier 6). The marketplace's tier
 describes what a brand costs, not whether anyone is buying it today.
 
 That last row is a direct answer to `overview.md` §10 question 2, and it is a no: Circle
@@ -621,13 +621,13 @@ of a different question under page 1 of this one would silently blend two result
 
 ### Why the pool is stored rather than swept live at browse time
 
-A tempting alternative is to hold nothing and query Sellpy when someone browses. It does
+A tempting alternative is to hold nothing and query the marketplace when someone browses. It does
 not work, for two independent reasons.
 
 **Ranking needs the group, not the item.** "Undervalued" means cheap against the median
 of its peer group, so every item on screen needs its group's median. Live, that is one
 Algolia request per distinct group — roughly 60 for a 60-item page, one to three seconds
-per scroll, every scroll, billed to Sellpy per operation. From the table it is 65–90 ms.
+per scroll, every scroll, billed to the marketplace per operation. From the table it is 65–90 ms.
 
 **It would not save what it appears to save.** Projected at full coverage, the pool is
 ~280 MB of a ~1.3 GB total — `items` (~664 MB) and `peer_prices` (~302 MB) are the bulk,

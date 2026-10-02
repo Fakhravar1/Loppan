@@ -18,7 +18,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from loppan import sellpy
+from loppan import market
 
 PAGE = 100
 DATA = pathlib.Path(__file__).resolve().parent.parent / "data"
@@ -33,14 +33,14 @@ def scan(max_items: int = 3000, region: str = "SE") -> list[dict]:
     while len(out) < max_items and consecutive_failures < 2:
         started = time.time()
         try:
-            batch = sellpy.find(
+            batch = market.find(
                 "MarketOffer",
                 {"region": region, "latest": True},
                 limit=PAGE,
                 skip=skip,
                 include="item",
             )
-        except sellpy.QueryTooSlow:
+        except market.QueryTooSlow:
             consecutive_failures += 1
             print(f"  skip={skip}: timed out, backing off", file=sys.stderr)
             skip += PAGE

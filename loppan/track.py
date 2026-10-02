@@ -28,7 +28,7 @@ What makes the pass affordable at all. Three things, in order of effect:
   2. **Only writing rows that changed.** Most items are identical day to day. Skipping
      the rest cuts both the runtime and the dead-tuple churn about fivefold.
   3. **Parallel reads.** The work is pure I/O, so threads turn a serial hour into
-     minutes. Note this applies to Algolia only — `sellpy.py` still talks to Sellpy's
+     minutes. Note this applies to Algolia only — `market.py` still talks to the marketplace's
      own backend one request per second, serially, because there the risk is the
      account rather than the server.
 
@@ -61,7 +61,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from loppan import algolia, cohort, db, sellpy
+from loppan import algolia, cohort, db, market
 
 WRITE_BATCH = 500
 ADJUDICATE = 60      # MarketOffer $in ceiling, verified
@@ -248,14 +248,14 @@ def flush(rows: list[dict]) -> int:
 def adjudicate(item_ids: list[str]) -> dict[str, tuple[int, int | None]]:
     """Ask Parse what actually happened. Returns item_id -> (outcome, final_ore).
 
-    Serial and throttled on purpose: this is Sellpy's own backend, not a CDN.
+    Serial and throttled on purpose: this is the marketplace's own backend, not a CDN.
     """
     out: dict[str, tuple[int, int | None]] = {}
     for i in range(0, len(item_ids), ADJUDICATE):
         chunk = item_ids[i:i + ADJUDICATE]
         pointers = [{"__type": "Pointer", "className": "Item", "objectId": x} for x in chunk]
         try:
-            offers = sellpy.find(
+            offers = market.find(
                 "MarketOffer",
                 {"item": {"$in": pointers}, "region": "SE", "latest": True},
                 limit=200, include="item")

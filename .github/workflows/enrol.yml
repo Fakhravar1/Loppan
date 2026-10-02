@@ -8,7 +8,7 @@ name: enrol new listings
 # of listing has its opening recorded by definition, so its ENTIRE price path — first
 # ask, every markdown, final sale — is observable.
 #
-# That is what makes Idea 2 testable at all. "Sellpy priced it wrong on day one"
+# That is what makes Idea 2 testable at all. "the marketplace priced it wrong on day one"
 # requires the day-one price.
 #
 # Without this job the sample is frozen: items resolve, the live pool shrinks, and
@@ -49,6 +49,17 @@ on:
 concurrency:
   group: enrol
   cancel-in-progress: false
+
+# Marketplace endpoints. These are public values, but they are kept out of the
+# repository so the source does not name the target; see loppan/endpoints.py.
+# They are repository VARIABLES, not secrets:
+#   Settings -> Secrets and variables -> Actions -> Variables.
+# A missing one fails the run at the first request with a clear NotConfigured.
+env:
+  LOPPAN_MARKET_API: ${{ vars.LOPPAN_MARKET_API }}
+  LOPPAN_MARKET_GRAPHQL: ${{ vars.LOPPAN_MARKET_GRAPHQL }}
+  LOPPAN_MARKET_SITE: ${{ vars.LOPPAN_MARKET_SITE }}
+  LOPPAN_MARKET_IMAGE_HOSTS: ${{ vars.LOPPAN_MARKET_IMAGE_HOSTS }}
 
 jobs:
   enrol:
@@ -102,7 +113,7 @@ jobs:
             exit 1
           fi
           python loppan/enrol.py --stratum C --target 5000
-          # --limit bounds Sellpy request volume per run, which is what makes this
+          # --limit bounds the marketplace request volume per run, which is what makes this
           # schedulable at all: ~120 new items a day against a 400 ceiling is 3x
           # headroom for a missed run or an inflow spike, and ~24 min at the measured
           # 1.8 s/item. It doubles as a catch-up — while the initial 14.8k backfill is

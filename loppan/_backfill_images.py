@@ -1,6 +1,6 @@
 """One-off: add image paths to rows collected before they were captured.
 
-No Sellpy requests — every image URL is already in the local caches.
+No the marketplace requests — every image URL is already in the local caches.
 """
 import glob, json, pathlib, sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))

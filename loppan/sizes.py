@@ -3,7 +3,7 @@
     python loppan/sizes.py            # what the target set covers, live from Algolia
     python loppan/sizes.py --all      # include the disabled candidate rows
 
-Only ~37% of Sellpy's wearable market can ever fit the two people this is being bought
+Only ~37% of the marketplace's wearable market can ever fit the two people this is being bought
 for. `target_sizes` in Postgres is that decision; this module turns it into queries.
 
 ⚠️ **This must never be applied to `enrol.py`.** That job builds the stratified sample
@@ -16,7 +16,7 @@ separate purpose. See `analytics.md` §8 on why the two are never pooled.
 ## Why the shapes are plural
 
 Algolia's `facetFilters` is AND across the outer list and OR within each inner list, so
-one query cannot express "(this size AND women) OR (that size AND men)". Two of Sellpy's
+one query cannot express "(this size AND women) OR (that size AND men)". Two of the marketplace's
 size fields carry no gender at all — `SHOES-EU-*` and `PANTS-INCH-*` are shared — and
 without the pairing, women's shoes 40–41 also returns 3,148 men's shoes and men's W32–33
 returns 896 women's trousers (measured 2026-08-10).
