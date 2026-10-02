@@ -402,8 +402,15 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
 
 **Phase 5 — Dashboard** reads the new table
 
-**Phase 6 — Retire the old pipeline** (see §10). Dropping Supabase tables is
-irreversible, so confirm each one before running the drop.
+**Phase 6 — Retire the old pipeline** (see §10)
+- [x] Supabase project restored from pause (2026-10-02). All 26 old `public` tables and 8
+      views dropped after the archive above, as one migration with no `CASCADE`
+      (`drop_v1_pipeline_after_bigquery_move`). Database 385 MB → 13 MB. Your own
+      app tables (`app_users`, `target_sizes`, `excluded_categories`,
+      `shortlist_flagged`) went too, by choice: clean slate
+- [ ] 33 old `public` functions remain (`refresh_shortlist`, `sweep_begin`, …), all
+      referencing dropped tables. Drop them once confirmed unused
+- [ ] Delete or archive the four paused v1 workflows
 
 ---
 
@@ -442,10 +449,12 @@ candidate sweep. It does not apply here, because scope is no longer size-restric
 tables; the strata and `sample_weight` machinery in `enrol.py`; `cohort.py`,
 `pool_refresh.py`; and the four workflows paused on 2026-08-19.
 
-⚠️ **Starting fresh discards `circle_origins`**, about 14.8k Circle purchase prices.
-`schema.md` warns that these may not be collectable again once the original listings go.
-That was accepted. `data/item_origins.jsonl` is a local copy of the raw pull if it is
-ever wanted.
+**The two irreplaceable tables were archived, not discarded.** On 2026-10-02,
+`bq-archive.yml` copied Supabase's `circle_origins` (16,172 Circle purchase prices) and
+`season_clearings` (the 1,497 histories behind the seasonal prior) into
+`loppan.archive_circle_origins` and `loppan.archive_season_clearings`. BigQuery's
+counts match Supabase's exactly. They sit outside the pipeline. JSON columns are stored
+as JSON strings.
 
 ---
 
