@@ -65,5 +65,5 @@ jobs:
             bq --location=EU load --replace --autodetect --source_format=NEWLINE_DELIMITED_JSON \
               "loppan.archive_$t" "$t.ndjson"
             bq --location=EU query --use_legacy_sql=false --format=pretty \
-              "select '$t' as archive, count(*) as rows from loppan.archive_$t"
+              "select '$t' as archive, count(*) as n from loppan.archive_$t"
           done
