@@ -85,6 +85,11 @@ _throttle_lock = threading.Lock()
 TRANSIENT = (OSError, http.client.HTTPException)
 RETRIES = 4
 BACKOFF_S = 3
+# Socket timeout per request. A kept-alive connection that has silently died costs
+# exactly this long before the retry above takes over: measured from GitHub's
+# runners 2026-10-02, one search request in ~27 stalled for 30.5 s. Read at connect
+# time, so a caller can lower it for its own process.
+TIMEOUT_S = 30
 
 _last_call = 0.0
 
@@ -118,7 +123,7 @@ def _connection() -> tuple[http.client.HTTPSConnection, bool]:
     conn = getattr(_conn_local, "conn", None)
     if conn is not None:
         return conn, False
-    conn = http.client.HTTPSConnection(HOST, timeout=30)
+    conn = http.client.HTTPSConnection(HOST, timeout=TIMEOUT_S)
     _conn_local.conn = conn
     return conn, True
 
@@ -252,8 +257,16 @@ def _drain(done):
         del fut
 
 
-def get_objects_parallel(item_ids: list[str], workers: int = MAX_WORKERS):
+def get_objects_parallel(item_ids: list[str], workers: int = MAX_WORKERS,
+                         attributes: list[str] | None = None):
     """Same as get_objects, in parallel, yielding (chunk_ids, results) as they land.
+
+    `attributes`, when given, is sent as each object's `attributesToRetrieve`, so a
+    caller that needs five fields does not download the whole ~10 KB record. A
+    missing object still comes back as None either way.
+
+    A chunk whose request fails after its retries is logged and NOT yielded. Callers
+    that need to know what was not fetched compare against what they asked for.
 
     The work is entirely I/O-bound — every second is spent waiting on HTTP — so
     threads cost almost nothing and turn a serial hour into a few minutes.
@@ -272,8 +285,11 @@ def get_objects_parallel(item_ids: list[str], workers: int = MAX_WORKERS):
     chunks = (item_ids[i:i + 100] for i in range(0, len(item_ids), 100))
 
     def fetch(chunk):
-        body = {"requests": [{"indexName": INDEX, "objectID": x} for x in chunk]}
-        return chunk, _post("*/objects", body)["results"]
+        reqs = [{"indexName": INDEX, "objectID": x} for x in chunk]
+        if attributes:
+            for r in reqs:
+                r["attributesToRetrieve"] = attributes
+        return chunk, _post("*/objects", {"requests": reqs})["results"]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         pending: set = set()
