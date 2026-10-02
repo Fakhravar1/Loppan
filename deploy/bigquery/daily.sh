@@ -28,9 +28,12 @@ step()     { echo "::group::$*"; T0=$SECONDS; }
 done_()    { echo "  took $((SECONDS - T0)) s"; echo "::endgroup::"; }
 sqlfile()  { "${BQ[@]}" query --use_legacy_sql=false --format=none \
                --parameter="run:DATE:$RUN" < "deploy/bigquery/$1"; }
-scalar()   { "${BQ[@]}" query --use_legacy_sql=false --format=csv "$1" | tail -n +2 | head -1; }
+# With Workload Identity credentials bq prints a "WARNING: --scopes ..." line to stdout,
+# ahead of the result. Drop it before parsing anything.
+bqout()    { "${BQ[@]}" query --use_legacy_sql=false "$@" | { grep -v '^WARNING:' || true; }; }
+scalar()   { bqout --format=csv "$1" | tail -n +2 | head -1; }
 # One query, its result pages read in full. Never repeated queries (§10).
-column()   { "${BQ[@]}" query --use_legacy_sql=false --format=json --max_rows=100000000 "$1" \
+column()   { bqout --format=json --max_rows=100000000 "$1" \
                | python -c "import json,sys; [print(r['$2']) for r in json.load(sys.stdin)]"; }
 
 # Validate, then load in chunks so no single load job carries a multi-GB file.
