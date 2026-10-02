@@ -303,6 +303,53 @@ class Floor(unittest.TestCase):
             bq_fetch.floor_from_bq = real
 
 
+def run_cli(table: str, *args) -> list[dict]:
+    """Run a bq_fetch subcommand that reads --ids and writes --out; validate the
+    output against `table` and return its rows. Ids are passed as a list first."""
+    ids, *rest = args
+    with tempfile.TemporaryDirectory() as d:
+        ids_path, out = os.path.join(d, "ids.txt"), os.path.join(d, "out.ndjson")
+        pathlib.Path(ids_path).write_text("\n".join(ids) + "\n", encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = bq_fetch.main([*rest, "--ids", ids_path, "--out", out,
+                                  "--run-date", "2026-10-02"])
+        assert code == 0, code
+        v = bq_schema.validate_file(pathlib.Path(out), table)
+        assert v["ok"], v["errors"]
+        return read_rows(out)
+
+
+class Parse(unittest.TestCase):
+    """The Parse subcommands, on a stubbed client: no request leaves the machine."""
+
+    def setUp(self):
+        self.parse = bq_fetch.outcomes.parse
+        self.saved = {k: getattr(self.parse, k) for k in ("find", "item", "ladder")}
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(self.parse, k, v)
+
+    def test_adjudicate_writes_the_raw_item_status_beside_the_outcome(self):
+        offers = [("sold", "såld", 249.5), ("paid", "betald", 300), ("gave", "skänkt", 200),
+                  ("odd", "reserverad", 450), ("bare", None, 180), ("live", "utlagd", 500)]
+
+        def find(cls, where, limit=None, include=None):
+            asked = {p["objectId"] for p in where["item"]["$in"]}
+            return [{"item": {"objectId": i, **({"itemStatus": s} if s else {})},
+                     "pricing": {"amount": kr}} for i, s, kr in offers if i in asked]
+
+        self.parse.find = find
+        rows = run_cli("adjudication_staging",
+                       [i for i, _, _ in offers] + ["noOffer"], "adjudicate")
+        got = {r["item_id"]: (r["outcome"], r["item_status"], r["final_price_ore"]) for r in rows}
+        self.assertEqual(got, {
+            "sold": ("sold", "såld", 24950), "paid": ("sold", "betald", 30000),
+            "gave": ("expired", "skänkt", 20000), "odd": ("unknown", "reserverad", 45000),
+            "bare": ("unknown", None, 18000)})       # still listed and no-offer: no row
+        self.assertEqual(list(rows[0])[-1], "item_status")
+
+
 class NoDatabase(unittest.TestCase):
     def test_fetch_path_never_imports_db(self):
         code = ("import sys; sys.path.insert(0, %r); import loppan.bq_fetch; "
