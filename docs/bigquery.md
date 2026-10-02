@@ -359,13 +359,17 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
 `~/loppan_setup.sh` in that Cloud Shell home directory.
 
 **Phase 1 — Tables**
-- [ ] `deploy/bigquery/schema.sql`, applied by `bq-schema.yml` on every change.
+- [x] `deploy/bigquery/schema.sql`, applied by `bq-schema.yml` on every change.
       Idempotent: `IF NOT EXISTS` plus a keyed `MERGE`. Tables: `items`,
       `sweep_staging`, `adjudication_staging`, `circle_origin_staging` (the three
       staging tables expire after 7 days), `runs` (the completeness gate),
       `brand_rules` (seeded with the §12 values), `brand_exclusions`, `cost_params`,
       `seasonal_prior`
-- [ ] `seasonal_prior` loaded from the CSV (`--replace`; the CSV is the source of truth)
+- [x] `seasonal_prior` loaded from the CSV (`--replace`; the CSV is the source of truth).
+      Verified 2026-10-02, run 37003550299: all 9 tables exist, `items` is partitioned
+      monthly on `resolved_on` and clustered on brand, category, the three staging
+      tables expire after 7 days, `brand_rules` is seeded, and the prior holds
+      12 months × warm/cold
 - [ ] Fill `cost_params` (open question 3) and `brand_exclusions` (the unbranded
       placeholder's exact label, found during Phase 2)
 
