@@ -1,0 +1,36 @@
+name: bq-verify
+# Throwaway: checks the census backfill against the brand counts. Removed afterwards.
+on:
+  push:
+    branches: [bigquery-daily]
+    paths: [.github/workflows/bq-verify.yml]
+permissions: {contents: read, id-token: write}
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - run: |
+          q() { bq --location=EU --quiet query --use_legacy_sql=false --format=pretty "$1" | grep -v '^WARNING:'; }
+          q "with k as (select sum(c.listings) as expected from loppan.brand_counts_staging c
+                        join loppan.kosher_brands b using (brand) where c.run_date = '2026-10-02')
+             select (select count(*) from loppan.items where resolved_on is null) as live,
+                    k.expected, round(100 * (select count(*) from loppan.items where resolved_on is null) / k.expected, 2) as pct_of_expected
+             from k"
+          q "select countif(price_ore < 15000) as under_floor, countif(brand is null) as unbranded,
+                    countif(brand not in (select brand from loppan.kosher_brands)) as not_kosher,
+                    countif(p2p) as circle, countif(p2p and circle_origin is null) as circle_no_origin,
+                    count(distinct brand) as brands, min(price_ore) as min_price_ore
+             from loppan.items"
+          q "select category, count(*) as n from loppan.items group by 1 order by 2 desc limit 8"
+          q "select run_date, live_ids, fetched, new_found, completeness, resolve_allowed, note from loppan.runs order by finished_at"
+          q "select table_name, round(total_logical_bytes / pow(1024, 3), 3) as logical_gib,
+                    round(total_physical_bytes / pow(1024, 3), 3) as physical_gib
+             from \`region-eu\`.INFORMATION_SCHEMA.TABLE_STORAGE
+             where table_schema = 'loppan' and total_logical_bytes > 0 order by 2 desc"

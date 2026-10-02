@@ -39,7 +39,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PUSH_MODE: census   # the mode a push to bigquery-daily runs
+  PUSH_MODE: daily    # the mode a push to bigquery-daily runs
 
 jobs:
   run:
