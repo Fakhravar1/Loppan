@@ -91,6 +91,11 @@ class Crawl:
             return "split", n, ex
         return "leaf", r.get("hits", []), n, ex
 
+    def leaf_size(self, hits, n) -> int:
+        """Items a leaf accounts for. Here, the hits actually read; a subclass whose
+        leaves are counts rather than hits overrides this."""
+        return len(hits)
+
     def _splittable(self, bounds) -> bool:
         return any(hi - lo > 1 for lo, hi in bounds)
 
@@ -139,14 +144,15 @@ class Crawl:
                         continue
                     _, hits, n, ex = res
                     leaves += 1
-                    hits_read += len(hits)
-                    if not ex or len(hits) != n:
+                    got = self.leaf_size(hits, n)
+                    hits_read += got
+                    if not ex or got != n:
                         self.problems.append({"kind": "leaf not exhaustive" if not ex else
                                               "hits != nbHits", "filter": self._filter(bounds),
-                                              "nbHits": n, "read": len(hits)})
+                                              "nbHits": n, "read": got})
                     p = nid
                     while p is not None:              # credit every ancestor
-                        self.nodes[p][3] += len(hits)
+                        self.nodes[p][3] += got
                         p = self.nodes[p][0]
                     if hits:
                         on_hits(hits)

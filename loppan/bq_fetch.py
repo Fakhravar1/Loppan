@@ -29,7 +29,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 # Every client import for the BigQuery path is here or in outcomes.py, so the
 # rename on the market-rename branch touches one line.
-from loppan import algolia, bq_schema, bq_shapes, outcomes
+from loppan import algolia, bq_brands, bq_schema, bq_shapes, outcomes
 
 RESOLVE_GATE = 0.995      # docs/bigquery.md §3 change 3
 SEASON_BITS = {"Vår": 1, "Sommar": 2, "Höst": 4, "Vinter": 8}
@@ -435,6 +435,22 @@ def cmd_origins(a) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- brands
+
+
+def cmd_brands(a) -> int:
+    """§12 inputs as one JSON document; there is no staging table for them."""
+    res = bq_brands.run(bq_shapes.scope(a.categories), a.median_top)
+    res["generated_at"] = utc_now()
+    res["scope"] = a.categories
+    pathlib.Path(a.out).write_text(json.dumps(res, ensure_ascii=False, indent=1) + "\n",
+                                   encoding="utf-8")
+    summary = {k: v for k, v in res.items() if k != "brands"}
+    summary["top_10"] = res["brands"][:10]
+    emit_summary(summary, a.summary)
+    return 0 if res["partition"]["complete"] else 2
+
+
 # ---------------------------------------------------------------- validate
 
 
@@ -493,6 +509,14 @@ def main(argv: list[str] | None = None) -> int:
     common(sp)
     sp.add_argument("--ids", required=True, help="Circle (p2p) item ids, one per line")
     sp.set_defaults(fn=cmd_origins)
+
+    sp = sub.add_parser("brands", help="§12 inputs: live listings and median ask per brand")
+    sp.add_argument("--out", required=True, help="JSON file to write")
+    sp.add_argument("--summary")
+    sp.add_argument("--categories", nargs="+", default=algolia.WEARABLE)
+    sp.add_argument("--median-top", type=int, default=1000,
+                    help="median ask for the top N brands by listings (one request each)")
+    sp.set_defaults(fn=cmd_brands)
 
     sp = sub.add_parser("validate", help="check an NDJSON file against schema.sql")
     sp.add_argument("file")
