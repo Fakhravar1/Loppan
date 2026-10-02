@@ -1,6 +1,6 @@
 """One-off: add fibre content to rows collected before materials were captured.
 
-Costs no Sellpy requests. The season data comes from the locally cached offers,
+Costs no the marketplace requests. The season data comes from the locally cached offers,
 which already carry the full item inline; the cohort data comes from a batched
 id lookup against the search index.
 """

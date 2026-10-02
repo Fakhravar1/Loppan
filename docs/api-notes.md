@@ -1,4 +1,4 @@
-# Sellpy backend — what the API will and won't do
+# The marketplace backend — what the API will and won't do
 
 Established empirically 2026-08-04. Read this before writing a query; several
 obvious-looking ones fail, and the failure mode is uninformative.
@@ -7,11 +7,11 @@ obvious-looking ones fail, and the failure mode is uninformative.
 
 | Layer | URL |
 |---|---|
-| Parse REST | `https://sellpy-parse-prod.herokuapp.com/parse` |
-| GraphQL | `https://sellpy-parse-prod.herokuapp.com/graphql` (introspection disabled) |
+| Parse REST | `$LOPPAN_MARKET_API` |
+| GraphQL | `$LOPPAN_MARKET_GRAPHQL` (introspection disabled) |
 
 Credentials are the browser SDK's `applicationId` + `javascriptKey`, served in
-plain text in `https://www.sellpy.se/market/index.*.bundle.js`. Public-by-design
+plain text in `$LOPPAN_MARKET_SITE/market/index.*.bundle.js`. Public-by-design
 client keys. If they rotate, re-read them from the bundle.
 
 No Cloudflare, no bot protection, no user-agent check. The site itself is a
@@ -25,7 +25,7 @@ It is not a malformed-request error. It nearly always means the field you
 constrained or sorted on is unindexed. Timing confirms it: every failure below
 took 10.2–10.4 s, every success was under 4 s.
 
-`sellpy.find()` raises `QueryTooSlow` on 500 for exactly this reason.
+`market.find()` raises `QueryTooSlow` on 500 for exactly this reason.
 
 ## Class access
 
@@ -95,7 +95,7 @@ Base filter `{"region": "SE", "latest": true}`.
   | **`såld`** | **sold, payout to the seller still pending** | **sold** |
   | `betald` | sold and paid out | sold |
   | `vilande` | dormant (observed after a cancelled Circle sale) | expired |
-  | `skänkt` | donated — Sellpy gives away what it cannot sell | expired |
+  | `skänkt` | donated — the marketplace gives away what it cannot sell | expired |
 
   ⚠️ **Never test `itemStatus == "betald"` to mean sold.** `betald` is sold *and
   paid out*, and the payout lands 21–24 days after a Circle sale (above), so that
@@ -110,7 +110,7 @@ Base filter `{"region": "SE", "latest": true}`.
   `skänkt` was 26 times before it was added.
 - **Circle listings are ordinary `Item` records** carrying
   `p2pValueShare: {version: 1, customerShare: 0.8}`.
-- **`sellabilityEstimate`** `{score, cutoff, isReliable, version}` — Sellpy's own
+- **`sellabilityEstimate`** `{score, cutoff, isReliable, version}` — the marketplace's own
   sell-probability. **Key any analysis by `version`**: `"3"` and `"3-mla"` both
   seen in the wild, so the model has already rolled at least once and scores are
   not comparable across versions.
@@ -128,7 +128,7 @@ From an unbiased 5,000-offer sample (2026-08-04), latest offers, region SE:
 | still listed (n=478) | 65 kr | 360 | — | 3,920 | 1 item |
 | ended (n=4,522) | 55 kr | 250 | — | 2,360 | 2 items |
 
-**Sellpy's live catalogue is overwhelmingly cheap.** 96% of current asking prices
+**The marketplace's live catalogue is overwhelmingly cheap.** 96% of current asking prices
 are under 500 kr. Any strategy that depends on a supply of high-value items has a
 sourcing problem, and defining a "premium" band on *current* price will find
 almost nothing — define it on the **opening ask** instead, since expensive items
@@ -138,7 +138,7 @@ are marked down into the cheap bands rather than staying expensive.
 
 `robots.txt` allows `/item/*` and disallows the search paths. These are
 undocumented endpoints being used outside a browser, so the constraint is
-self-imposed: one request per second (`sellpy.MIN_INTERVAL_S`), no distributed
+self-imposed: one request per second (`market.MIN_INTERVAL_S`), no distributed
 crawling, no redistribution of the data, one account. The exposure that matters
 isn't the scraper breaking — it's the account.
 
@@ -147,13 +147,13 @@ isn't the scraper breaking — it's the account.
 Two things were measured while moving 14,800 Circle origins, and both refine the
 rule rather than relax it.
 
-**Nothing here authenticates as a user.** `sellpy.py` sends `_ApplicationId`,
+**Nothing here authenticates as a user.** `market.py` sends `_ApplicationId`,
 `_JavaScriptKey` and `_ClientVersion` — the public browser-SDK keys served in every
 visitor's bundle — and no session token, cookie or `Authorization` header. So the
 account is not attached to this traffic at the auth layer, and the realistic worst
 case is an IP being rate-limited or blocked, which breaks a crawl and is
 recoverable. The residual account exposure is **correlation**: the crawl leaving the
-same household IP that also carries a logged-in Sellpy session. That is an argument
+same household IP that also carries a logged-in the marketplace session. That is an argument
 about where the traffic originates, not about how fast it goes.
 
 **A Parse request costs ~0.24 s of latency against a 1.0 s interval**, so at the
@@ -164,7 +164,7 @@ around 0.25 s. `backfill_item_origins.py --interval` does this **scoped to one j
 
 ⚠️ Two lines this does not cross, and should not. It stays **strictly serial** — one
 request in flight, never a worker pool — so "no distributed crawling" is untouched;
-and it does not change `sellpy.MIN_INTERVAL_S` itself, because that global also
+and it does not change `market.MIN_INTERVAL_S` itself, because that global also
 governs `track.py`'s adjudication and the cohort checks, which were sized against
 1 req/s and are nowhere near this hot. Re-tune per job, with a measurement, not
 globally.
@@ -175,7 +175,7 @@ globally.
 
 Everything above describes Parse, which cannot filter by price, brand or date and
 tops out around 9,000 rows. Two search indexes lift those limits, and it matters
-which one you reach for. **Algolia is the index the sellpy.se storefront actually
+which one you reach for. **Algolia is the index the marketplace storefront actually
 browses, and it is the primary discovery surface here.** The Typesense collection
 documented in the next section is a ~5% subset of it, kept only for the two fields
 it uniquely carries.
@@ -252,7 +252,7 @@ sampled document.
 Algolia is third-party CDN infrastructure built for high query rates — the storefront
 fires several requests per page view — so `algolia.py` runs at
 `MIN_INTERVAL_S = 0.05` across 8 workers. **This is deliberately not the same
-judgement as `sellpy.py`**, which talks to Sellpy's own Parse backend at one request
+judgement as `market.py`**, which talks to the marketplace's own Parse backend at one request
 per second, strictly serial, because there the exposure is the account.
 
 ---
@@ -284,12 +284,12 @@ Typesense is the place to read them.
 
 | Field | Note |
 |---|---|
-| **`priceToEstimateRatio`** | **Sellpy's own current-price ÷ their value estimate.** Exclusive to this index, and the single most useful field found. |
+| **`priceToEstimateRatio`** | **The marketplace's own current-price ÷ their value estimate.** Exclusive to this index, and the single most useful field found. |
 | **`favouriteCount`** / `regularFavouriteCount` | Demand signal. Filterable but **not sortable**. |
 | **`lastChance`** | Boolean — the item is near end of life. Powers `/store/selection/last-chance-items`. |
 | **`price_SE`** | `{amount, currency}` — **amount is in ÖRE**. Filter path is `price_SE.amount`. 200000 = 2,000 kr. |
 | `priceDrop_SE` | Present, usually null; not yet characterised. |
-| `brandClassification.pricePoint` | Sellpy's brand price tier, 1–6. |
+| `brandClassification.pricePoint` | The marketplace's brand price tier, 1–6. |
 | `brandClassification` | Also `aestheticTone`, `ethos`, `originVibe`, `styles`, `ageGroups` — evidently LLM-generated. |
 | `saleStartedAt`, `firstOfferedAt_SE` | Listing timestamps. |
 | `isOnShelf`, `isReserved`, `saleType`, `p2p` | `p2p:true` = **a Circle listing**. |
@@ -309,7 +309,7 @@ and decoded at read time, so the display format can change without re-collecting
 ## Population **within Typesense**, measured 2026-08-04
 
 ⚠️ **Every count below is scoped to this ~5% subset. None of it is market-wide.**
-Read them as "of the 584,041 documents in `market_items`", never as "of Sellpy".
+Read them as "of the 584,041 documents in `market_items`", never as "of the marketplace".
 The Circle row in particular understates the real pool by more than an order of
 magnitude — see the Algolia counts underneath.
 
@@ -359,7 +359,7 @@ is the working equivalent.
 
 ## Warning about `priceToEstimateRatio`
 
-A low ratio means the current price sits below Sellpy's own estimate. Items start
+A low ratio means the current price sits below the marketplace's own estimate. Items start
 at or above the estimate and are marked **down** through the ladder — so a low
 ratio is largely a measure of **how far the item has already been discounted**,
 which is the pattern the four known trades associate with the *worst* returns
@@ -374,7 +374,7 @@ wanted". That distinction was not measurable at all before this index.
 # The curation engine (added 2026-08-05)
 
 `sweep.py` walks items at **100 kr and above** (~165k of 529k on shelf, ~20 min at
-Sellpy's maximum 250 per page) into `catalogue`, then rebuilds `brand_stats`.
+The marketplace's maximum 250 per page) into `catalogue`, then rebuilds `brand_stats`.
 Runs daily via `.github/workflows/sweep.yml`. Price and favourite history are both
 written by database triggers, so the sweep upserts blindly.
 
@@ -459,7 +459,7 @@ You keep 84%. So for an item worth V bought at P:
     ask    = min(V, 5P)
     profit = 0.84 × ask − P
 
-V is unobservable, so Sellpy's own estimate stands in: `V = P / priceToEstimateRatio`,
+V is unobservable, so the marketplace's own estimate stands in: `V = P / priceToEstimateRatio`,
 making V/P the inverse of that ratio. The cap therefore binds at ratio ≤ 0.2, and
 there profit is a flat **3.2 × P** — so among cap-binding items the *dearest* wins.
 
@@ -467,7 +467,7 @@ This inverts the naive reading of the first four trades. Those returned exactly
 5× because they were pinned at the ceiling, not because cheap items are better.
 
 `expected_profit()` is a **ceiling**, not a forecast: it assumes the item sells,
-and that Sellpy's estimate approximates resale value. Multiply by a sell-through
+and that the marketplace's estimate approximates resale value. Multiply by a sell-through
 probability once the cohort supplies one.
 
 ## Two traps found while building it
@@ -550,8 +550,8 @@ three had already nearly fired.
 
 | Failure | What used to happen |
 |---|---|
-| Sellpy returns nothing (blocked, filter broken) | Sweep writes 0 rows, brand stats and scores rebuild on stale data, job **exits 0** |
-| Sweep dies partway | ~66,000 live rows keep an old `last_seen`, so `resolve_outcomes` sees them as vanished and writes them all as `below_floor` — plus a 20× traffic spike at Sellpy |
+| The marketplace returns nothing (blocked, filter broken) | Sweep writes 0 rows, brand stats and scores rebuild on stale data, job **exits 0** |
+| Sweep dies partway | ~66,000 live rows keep an old `last_seen`, so `resolve_outcomes` sees them as vanished and writes them all as `below_floor` — plus a 20× traffic spike at the marketplace |
 | Sweep run 00:00–02:00 local | `dt.date.today()` on a UTC+2 machine is a day ahead of Postgres, so every *other* row looks vanished |
 
 Guards, all enforced in the database so a caller cannot skip them:
@@ -713,12 +713,12 @@ Sign in, then query. Everything is filterable and sortable:
 ⚠️ `v_candidates` no longer exists — it went in the v2 rehaul along with `catalogue`
 and `item_scores`, and with it `score`, `expected_profit`, `cap_binds` and
 `premium_fibre`. Its replacement is `v_shortlist`, which is a different quantity:
-cheap against *live peers*, not against Sellpy's value estimate. There is no profit
+cheap against *live peers*, not against the marketplace's value estimate. There is no profit
 column, because `price_to_estimate` is null on every live item since the rehaul.
 
 `v_shortlist` is ~2,000 rows and every column is stored, so **fetch it whole and sort
 client-side** rather than issuing a query per sort. `thumbnail` and `images` are
-ready-built CDN URLs on `prod.images.sellpy.net`. Sellpy honours no resize
+ready-built CDN URLs on the public CDN (first host in `$LOPPAN_MARKET_IMAGE_HOSTS`). The marketplace honours no resize
 parameters, so scale client-side.
 
 ⚠️ **PostgREST caps every request at 1,000 rows, and `limit` does not override it.**

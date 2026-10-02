@@ -7,9 +7,9 @@ objects — see docs/api-notes.md.
 
 The search key is fetched at runtime from the same GraphQL call the website makes.
 It is a scoped, search-only, client-side key: every visitor's browser holds it.
-It is deliberately NOT hardcoded here, so if Sellpy rotates it this keeps working.
+It is deliberately NOT hardcoded here, so if the marketplace rotates it this keeps working.
 
-Note on conduct: robots.txt disallows Sellpy's /search paths. This is the API the
+Note on conduct: robots.txt disallows the marketplace's /search paths. This is the API the
 site itself calls rather than those pages, but the spirit is close enough that the
 same restraint applies — modest volumes, one request per second, no redistribution.
 """
@@ -24,6 +24,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from loppan import endpoints
+
 # Network faults that say "try again", as opposed to "this request is wrong".
 TRANSIENT = (
     ConnectionError,          # covers ConnectionResetError
@@ -35,7 +37,6 @@ TRANSIENT = (
 RETRIES = 4
 BACKOFF_S = 3
 
-GRAPHQL = "https://sellpy-parse-prod.herokuapp.com/graphql"
 APP_ID = "3ebgwo1hPV0sk74fnWBTSW3RIxgw3b2ZAxM6qmCj"
 JS_KEY = "hRVEXFeMQX8fB18ODYI9UvtlLkliB43qeaqUht3f"
 COLLECTION = "market_items"
@@ -59,7 +60,7 @@ def config() -> dict:
     if _config:
         return _config
     req = urllib.request.Request(
-        GRAPHQL,
+        endpoints.graphql(),
         data=json.dumps({"query": _CONFIG_QUERY, "variables": {}}).encode(),
         headers={
             "Content-Type": "application/json",
@@ -139,11 +140,6 @@ def price_kr(doc: dict, region: str = "SE") -> float | None:
     return block["amount"] / 100 if block else None
 
 
-IMAGE_HOSTS = ("https://prod.images.sellpy.net/",
-               "https://sellpy-parse-prod-files.s3.amazonaws.com/",
-               "https://sellpy-parse-prod-files.s3.eu-west-1.amazonaws.com/")
-
-
 def image_paths(urls) -> list[str]:
     """Strip the host, keep the path.
 
@@ -153,7 +149,7 @@ def image_paths(urls) -> list[str]:
     """
     out = []
     for url in urls or []:
-        for host in IMAGE_HOSTS:
+        for host in endpoints.image_hosts():
             if url.startswith(host):
                 url = url[len(host):]
                 break
@@ -171,10 +167,10 @@ def summarise(doc: dict) -> dict:
     )
     return {
         "item_id": doc["id"],
-        "url": f"https://www.sellpy.se/item/{doc['id']}",
+        "url": f"{endpoints.site()}/item/{doc['id']}",
         "brand": shared.get("brand"),
         "type": translated.get("type"),
-        # Sellpy tags season natively, so the seasonality idea needs no
+        # the marketplace tags season natively, so the seasonality idea needs no
         # inference. Present on roughly a fifth of items; null means untagged,
         # not all-season.
         "season": translated.get("season"),
@@ -193,7 +189,7 @@ def summarise(doc: dict) -> dict:
         "condition": translated.get("condition"),
         "has_defect": bool(translated.get("defects")),
         "price_kr": price_kr(doc),
-        # Sellpy's own price-vs-value ratio. Below 1 means the current asking
+        # the marketplace's own price-vs-value ratio. Below 1 means the current asking
         # price sits under their own estimate for the item.
         "price_to_estimate": doc.get("priceToEstimateRatio"),
         "favourites": doc.get("favouriteCount"),

@@ -1,9 +1,9 @@
-"""Minimal read-only client for Sellpy's public Parse backend.
+"""Minimal read-only client for the marketplace's public Parse backend.
 
 The application id and javascript key below are the browser SDK's own keys, served
-in plain text inside https://www.sellpy.se/market/index.*.bundle.js. They are
-public-by-design client credentials, not secrets. See docs/api-notes.md for the
-map of which query shapes the server will actually accept.
+in plain text inside the site's own JS bundle. They are public-by-design client
+credentials, not secrets. See docs/api-notes.md for the map of which query
+shapes the server will actually accept.
 
 Read-only by construction: this module never issues a write, and nothing here
 authenticates as a user.
@@ -18,6 +18,8 @@ import time
 import urllib.error
 import urllib.request
 
+from loppan import endpoints
+
 # Network faults that say "try again", as opposed to "this request is wrong".
 TRANSIENT = (
     ConnectionError,          # covers ConnectionResetError
@@ -29,7 +31,6 @@ TRANSIENT = (
 RETRIES = 4
 BACKOFF_S = 3
 
-BASE = "https://sellpy-parse-prod.herokuapp.com/parse"
 APP_ID = "3ebgwo1hPV0sk74fnWBTSW3RIxgw3b2ZAxM6qmCj"
 JS_KEY = "hRVEXFeMQX8fB18ODYI9UvtlLkliB43qeaqUht3f"
 
@@ -63,7 +64,7 @@ def _post(path: str, body: dict) -> dict:
         }
     )
     req = urllib.request.Request(
-        f"{BASE}/{path}",
+        f"{endpoints.api()}/{path}",
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
     )
@@ -121,7 +122,7 @@ def item(object_id: str) -> dict:
 
 
 def ladder(item_id: str, region: str = "SE") -> list[dict]:
-    """Every price step Sellpy ever set for one item, oldest first.
+    """Every price step the marketplace ever set for one item, oldest first.
 
     This is the whole point of the project: the markdown history is retained and
     readable long after the item sold, so decay curves can be reconstructed

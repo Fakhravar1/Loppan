@@ -1,4 +1,4 @@
-"""Read-only client for the Algolia index the Sellpy storefront actually browses.
+"""Read-only client for the Algolia index the marketplace storefront actually browses.
 
 Why this exists alongside `search.py`. The storefront queries Algolia
 (`prod_marketItem_se_relevance`, ~12.5M documents). The Typesense collection that
@@ -51,8 +51,8 @@ WEARABLE = [
 
 # Algolia is third-party CDN infrastructure built for high query rates — the
 # storefront itself fires several requests per page view — so a modest parallel read
-# rate is unremarkable here. This is NOT the same judgement as `sellpy.py`, which
-# talks to Sellpy's own Parse backend where the risk is the account, not the server,
+# rate is unremarkable here. This is NOT the same judgement as `market.py`, which
+# talks to the marketplace's own Parse backend where the risk is the account, not the server,
 # and which stays at one request per second and strictly serial.
 MIN_INTERVAL_S = 0.05
 MAX_WORKERS = 8

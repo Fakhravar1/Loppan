@@ -23,10 +23,10 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from loppan import cohort, search, sellpy
+from loppan import cohort, market, search
 
 DATA = pathlib.Path(__file__).resolve().parent.parent / "data"
-KEEP_SHARE = 0.84  # Circle payout taken as Sellpy credit (+5% on the 80% share)
+KEEP_SHARE = 0.84  # Circle payout taken as the marketplace credit (+5% on the 80% share)
 
 
 def _day(value):
@@ -42,14 +42,14 @@ def _gap(a: str | None, b: str | None) -> int | None:
 
 
 def roundtrip(circle_id: str) -> dict | None:
-    circle = sellpy.item(circle_id)
+    circle = market.item(circle_id)
     preceding = circle.get("preceding")
     if not preceding:
         return None
     original_id = preceding["objectId"]
 
-    circle_ladder = sellpy.ladder(circle_id)
-    original_ladder = sellpy.ladder(original_id)
+    circle_ladder = market.ladder(circle_id)
+    original_ladder = market.ladder(original_id)
     if not circle_ladder or not original_ladder:
         return None
 
@@ -69,7 +69,7 @@ def roundtrip(circle_id: str) -> dict | None:
     # the payout still pending. One mapping, in cohort.STATUS_OUTCOME, so a new
     # status is learned once rather than in each caller.
     sold = cohort.STATUS_OUTCOME.get(circle.get("itemStatus")) == "sold"
-    original = sellpy.item(original_id)
+    original = market.item(original_id)
     meta = original.get("metadata") or {}
     score = original.get("sellabilityEstimate") or {}
     original_opening = original_ladder[0]["pricing"]["amount"]
@@ -83,7 +83,7 @@ def roundtrip(circle_id: str) -> dict | None:
         "has_defect": bool(meta.get("defects")),
         "season": meta.get("season"),
         "score": score.get("score"),
-        # the original listing, as Sellpy sold it
+        # the original listing, as the marketplace sold it
         "original_opening": original_opening,
         "original_rungs": len(original_ladder),
         "bought_price": bought_price,

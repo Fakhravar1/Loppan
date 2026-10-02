@@ -12,7 +12,7 @@ Read `pi-runner.md` first — it explains what the Pi is and why it is shared.
 `api-notes.md` names the real exposure: nothing here authenticates as a user, so the
 worst realistic case is an IP being rate-limited. The residual risk is **correlation**
 — crawl traffic leaving the same household address that also carries a logged-in
-Sellpy session. This removes that link.
+The marketplace session. This removes that link.
 
 **It is not rate-limit evasion.** There is no IP rotation and there will not be. The
 whole crawl is a few thousand Algolia requests, about 73 seconds of traffic; there is
@@ -119,7 +119,7 @@ bind the runner.
 
 | | Result |
 |---|---|
-| Host public IP | `2.249.73.218` (home) |
+| Host public IP | _(redacted)_ — the home address |
 | Namespace public IP | `187.15.109.101` (NordVPN Sweden) |
 | Route removed | `Could not resolve host` — nothing escaped |
 | Qvitta runner | `active` throughout, never left the host namespace |
@@ -128,7 +128,7 @@ Namespace IDs confirm the split: the Loppan runner sits in `net:[4026532549]` wh
 Qvitta runner and `init` share `net:[4026531840]`.
 
 Both real endpoints were then exercised **through the tunnel**, because reaching
-GitHub proves nothing about whether Sellpy's infrastructure accepts a VPN address:
+GitHub proves nothing about whether the marketplace's infrastructure accepts a VPN address:
 
 | Endpoint | Result |
 |---|---|

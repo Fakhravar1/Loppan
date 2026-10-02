@@ -1,13 +1,13 @@
-"""Collect Sellpy's own p(sell) for the cohort.
+"""Collect the marketplace's own p(sell) for the cohort.
 
 `sellabilityEstimate` is the most valuable field found so far and the one this
-project cannot compute for itself: Sellpy trains it on millions of listed items
+project cannot compute for itself: the marketplace trains it on millions of listed items
 and their outcomes, then hands it over for free.
 
     {"score": 0.984, "isReliable": true, "cutoff": 0.44, "version": "3-mla"}
 
 The point is the correlation, not the number. §3 establishes that sell-through is
-the binding constraint and the hardest term in the buy rule. If Sellpy's score
+the binding constraint and the hardest term in the buy rule. If the marketplace's score
 predicts *our* Circle sell-through, that term is solved on day one — and the
 cohort is the only place it can be tested, because only the cohort has outcomes.
 
@@ -34,7 +34,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from loppan import db, sellpy
+from loppan import db, market
 
 BATCH = 60  # 60 pointers per query is verified; larger risks a server-side timeout
 DATA = pathlib.Path(__file__).resolve().parent.parent / "data"
@@ -52,7 +52,7 @@ def fetch(item_ids: list[str]) -> list[dict]:
     pointers = [
         {"__type": "Pointer", "className": "Item", "objectId": i} for i in item_ids
     ]
-    offers = sellpy.find(
+    offers = market.find(
         "MarketOffer",
         {"item": {"$in": pointers}, "region": "SE", "latest": True},
         limit=200,

@@ -9,7 +9,7 @@ name: cohort check
 
 on:
   schedule:
-    - cron: "20 5 * * *"   # 05:20 UTC daily, a quiet hour for Sellpy
+    - cron: "20 5 * * *"   # 05:20 UTC daily, a quiet hour for the marketplace
   workflow_dispatch:
     inputs:
       runner:
@@ -21,6 +21,17 @@ on:
 concurrency:
   group: cohort-check
   cancel-in-progress: false   # never let a new run interrupt one mid-write
+
+# Marketplace endpoints. These are public values, but they are kept out of the
+# repository so the source does not name the target; see loppan/endpoints.py.
+# They are repository VARIABLES, not secrets:
+#   Settings -> Secrets and variables -> Actions -> Variables.
+# A missing one fails the run at the first request with a clear NotConfigured.
+env:
+  LOPPAN_MARKET_API: ${{ vars.LOPPAN_MARKET_API }}
+  LOPPAN_MARKET_GRAPHQL: ${{ vars.LOPPAN_MARKET_GRAPHQL }}
+  LOPPAN_MARKET_SITE: ${{ vars.LOPPAN_MARKET_SITE }}
+  LOPPAN_MARKET_IMAGE_HOSTS: ${{ vars.LOPPAN_MARKET_IMAGE_HOSTS }}
 
 jobs:
   check:

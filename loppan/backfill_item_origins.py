@@ -7,13 +7,13 @@ them had an origin, so each one was a complete round trip that could only be pri
 by going back to Parse and hoping the original was still there.
 
 That hope is the reason this job is time-sensitive. A Circle listing points back, via
-`preceding`, to the item its seller originally bought from Sellpy. `track.py` will
+`preceding`, to the item its seller originally bought from the marketplace. `track.py` will
 tell us what the item finally fetched — but the purchase price lives on the *original*
 listing, and nothing guarantees that stays reachable. Capturing the link while the
 item is still live turns "did it sell" into "paid P, sold for S, so the multiple was
 S/P". Sell-through alone cannot say whether the trade is profitable.
 
-Break-even is a gross multiple of 1/0.84 = 1.19x, since Sellpy keeps 16%.
+Break-even is a gross multiple of 1/0.84 = 1.19x, since the marketplace keeps 16%.
 
 ⚠️ Units. Parse returns kronor; `items` and `circle_origins` are in ÖRE. The
 conversion happens here, on the way in. This is why the function below is not shared
@@ -36,7 +36,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from loppan import db, sellpy
+from loppan import db, market
 
 DATA = pathlib.Path(__file__).resolve().parent.parent / "data"
 CACHE = DATA / "item_origins.jsonl"
@@ -66,7 +66,7 @@ def origin_of(circle_id: str) -> dict | None:
     Returns None when the listing carries no `preceding` pointer at all — that is a
     Circle item whose purchase side is simply not recorded, not a failure.
     """
-    circle = sellpy.item(circle_id)
+    circle = market.item(circle_id)
     preceding = circle.get("preceding")
     if not preceding:
         return None
@@ -75,7 +75,7 @@ def origin_of(circle_id: str) -> dict | None:
     row["item_id"] = circle_id
     row["original_id"] = preceding["objectId"]
 
-    ladder = sellpy.ladder(row["original_id"])
+    ladder = market.ladder(row["original_id"])
     if not ladder:
         return row  # linked, but the original's price history is gone
 
@@ -94,7 +94,7 @@ def origin_of(circle_id: str) -> dict | None:
 def _cached() -> dict[str, dict]:
     """Origins already fetched, keyed by Circle item id.
 
-    Fetching costs two Sellpy requests per item and roughly two hours for the whole
+    Fetching costs two the marketplace requests per item and roughly two hours for the whole
     population. A database error should not make us pay that again.
     """
     if not CACHE.exists():
@@ -136,7 +136,7 @@ def main() -> None:
         sys.exit("LOPPAN_SUPABASE_KEY is not set")
     limit = int(sys.argv[sys.argv.index("--limit") + 1]) if "--limit" in sys.argv else None
 
-    # Scoped to this job on purpose. `sellpy.MIN_INTERVAL_S` is a module global, so
+    # Scoped to this job on purpose. `market.MIN_INTERVAL_S` is a module global, so
     # editing the default would also re-tune track.py's adjudication and the cohort
     # checks — jobs that were sized against 1 req/s and are nowhere near this hot.
     #
@@ -147,10 +147,10 @@ def main() -> None:
     # never a worker pool, which is the "no distributed crawling" line in
     # docs/api-notes.md and is not what this flag relaxes.
     if "--interval" in sys.argv:
-        sellpy.MIN_INTERVAL_S = float(sys.argv[sys.argv.index("--interval") + 1])
-    print(f"Sellpy interval: {sellpy.MIN_INTERVAL_S}s "
-          f"(~{1/sellpy.MIN_INTERVAL_S:.1f} req/s, serial)" if sellpy.MIN_INTERVAL_S
-          else "Sellpy interval: unthrottled")
+        market.MIN_INTERVAL_S = float(sys.argv[sys.argv.index("--interval") + 1])
+    print(f"the marketplace interval: {market.MIN_INTERVAL_S}s "
+          f"(~{1/market.MIN_INTERVAL_S:.1f} req/s, serial)" if market.MIN_INTERVAL_S
+          else "the marketplace interval: unthrottled")
 
     todo = targets()
     if not todo:
@@ -161,7 +161,7 @@ def main() -> None:
     fetch = [i for i in todo if i not in cache]
     if limit:
         fetch = fetch[:limit]
-    print(f"{len(cache):,} already fetched | {len(fetch):,} to pull from Sellpy "
+    print(f"{len(cache):,} already fetched | {len(fetch):,} to pull from the marketplace "
           f"(~{max(1, len(fetch) * 2 // 60)} min at 1 req/s)")
 
     DATA.mkdir(parents=True, exist_ok=True)
