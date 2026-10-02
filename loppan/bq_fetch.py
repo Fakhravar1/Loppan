@@ -356,10 +356,11 @@ def floor_from_bq() -> float | None:
     if not exe:
         return None
     try:
-        p = subprocess.run([exe, "--location=EU", "--format=json", "query",
+        p = subprocess.run([exe, "--quiet", "--location=EU", "--format=json", "query",
                             "--use_legacy_sql=false", FLOOR_SQL],
                            capture_output=True, text=True, timeout=90)
-        rows = json.loads(p.stdout or "[]") if p.returncode == 0 else []
+        text = p.stdout if p.returncode == 0 else ""
+        rows = json.loads(text[text.find("["):]) if "[" in text else []
         return float(rows[0]["value"]) if rows and rows[0].get("value") is not None else None
     except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, IndexError):
         return None
