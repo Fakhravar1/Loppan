@@ -314,6 +314,23 @@ thousands and the prior has effectively no weight.
 - Cap at the top ~20–30k rows by `expected_profit_kr`. That keeps Supabase in the
   low tens of MB.
 
+**As built (2026-10-03).** Supabase migration `shortlist_v2`:
+- **`public.shortlist`** is what the dashboard reads. Columns mirror
+  `shortlist_candidates`, plus `image_paths` and the generated
+  `size_group`/`size_system`/`size_value`. Prices are in öre, as in BigQuery.
+- **`public.shortlist_staging`** is the landing table.
+- **`promote_shortlist()`** truncates and inserts in one transaction, and **refuses an
+  empty swap**, so a failed export never blanks the dashboard.
+- **Access:** RLS is on. Signed-in users (`authenticated`) may read `shortlist`. Only
+  the service role writes, and nobody else can touch staging or call either function.
+
+`loppan/bq_export.py` runs as the last step of `daily.sh daily`, or alone with
+`daily.sh export`. It reads every candidate with one `bq` query and attaches image paths
+for those ids only. An id the search index no longer returns has sold since the
+morning's run and is dropped. Then it stages in batches of 500 and calls the swap.
+It needs the `LOPPAN_SUPABASE_KEY` repository secret, which `bq-daily.yml` passes in.
+`size_area` (`schema.md`) is not rebuilt yet.
+
 ---
 
 ## 8. Size and cost
@@ -448,7 +465,8 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
       `expected_profit_ore` stays NULL until `cost_params` is filled
 - [x] `bq-health.yml`, daily: missed run, closed completeness gate, > 10 GiB billed in
       24 h. The cost check needs `roles/bigquery.resourceViewer` on the service account
-- [ ] Export to a **new** Supabase table; image fetch for shortlisted ids
+- [x] Export to a **new** Supabase table (`shortlist`, §7), with images fetched for the
+      shortlisted ids only. Runs at the end of every daily run
 
 **Phase 5 — Dashboard** reads the new table
 

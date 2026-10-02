@@ -3,7 +3,7 @@ name: bq-daily
 # Loppan's daily sweep into BigQuery: deploy/bigquery/daily.sh (docs/bigquery.md §5).
 #   schedule           daily mode, 02:00 UTC (04:00 Stockholm summer time). Fires only
 #                      from the default branch.
-#   workflow_dispatch  any mode: daily | census (the one-off backfill) | origins (the
+#   workflow_dispatch  any mode: daily | census (the one-off backfill) | export | origins (the
 #                      Circle-origin backlog, in chunks)
 #   push               only on the bigquery-daily branch, when this file or daily.sh
 #                      changes, in PUSH_MODE: how the pipeline was proven before merge
@@ -17,9 +17,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: daily | census | origins
+        description: daily | census | origins | export
         type: choice
-        options: [daily, census, origins]
+        options: [daily, census, origins, export]
         default: daily
       origins_max:
         description: Circle origins to fetch this run (Parse is serial, ~2 s each)
@@ -39,7 +39,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PUSH_MODE: origins  # the mode a push to bigquery-daily runs
+  PUSH_MODE: export   # the mode a push to bigquery-daily runs
   PUSH_ORIGINS_MAX: "6000"   # ~3.3 h of serial Parse calls, inside the 330 min limit (2nd batch)
 
 jobs:
@@ -66,6 +66,8 @@ jobs:
           MODE: ${{ github.event_name == 'push' && env.PUSH_MODE || inputs.mode || 'daily' }}
           ORIGINS_MAX: ${{ github.event_name == 'push' && env.PUSH_ORIGINS_MAX || inputs.origins_max || '1500' }}
           OUT_DIR: ${{ runner.temp }}/bq-run
+          # The shortlist export (the last step of daily, and export mode) writes to Supabase.
+          LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
         run: |
           mkdir -p "$OUT_DIR"
           bash deploy/bigquery/daily.sh "$MODE"
