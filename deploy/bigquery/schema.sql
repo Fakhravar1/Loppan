@@ -181,3 +181,35 @@ CREATE TABLE IF NOT EXISTS loppan.seasonal_prior (
   median_kept_pct  FLOAT64 OPTIONS (description = "Median share of the opening ask kept at sale"),
   seasonal_index   FLOAT64 OPTIONS (description = "median_kept_pct / its 12-month mean. Decay, not price level: docs/bigquery.md §6")
 );
+
+-- ─── additions: append below, never edit a CREATE above ────────────────────────
+
+-- The price at first sight. For history_complete items that is the opening ask, which
+-- the model's kept-share needs. A plain column so model.sql never reads price_history.
+ALTER TABLE loppan.items ADD COLUMN IF NOT EXISTS first_price_ore INT64
+  OPTIONS (description = "Price at first sight, öre. The opening ask only when history_complete");
+
+CREATE TABLE IF NOT EXISTS loppan.model_params (
+  rule             STRING NOT NULL,
+  value            FLOAT64,
+  note             STRING
+)
+OPTIONS (description = "Pooling weights and export limits read by model.sql. docs/bigquery.md §6-§7");
+
+MERGE loppan.model_params t
+USING (
+  SELECT 'k_level' AS rule, 20.0 AS value,
+         'Pseudo-sales pulling a brand x category price level toward its category' AS note
+  UNION ALL SELECT 'k_season', 30.0,
+         'Pseudo-sales of weight the seasonal prior keeps in each group x month cell'
+  UNION ALL SELECT 'k_sell', 20.0,
+         'Pseudo-resolutions pulling brand x category sell-through toward its category'
+  UNION ALL SELECT 'window_days', 365.0,
+         'How far back sales and resolutions count'
+  UNION ALL SELECT 'export_max_pct_of_expected', 60.0,
+         'Loosest bargain threshold exported to the shortlist; the dashboard filters tighter'
+  UNION ALL SELECT 'export_top_n', 30000.0,
+         'Cap on exported candidates, ranked by sell-through-weighted gross margin'
+) s
+ON t.rule = s.rule
+WHEN NOT MATCHED THEN INSERT (rule, value, note) VALUES (s.rule, s.value, s.note);
