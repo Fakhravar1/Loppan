@@ -7,6 +7,11 @@ name: bq-fetch-sample
 # Runs on push only when this file changes. No schedule, no manual trigger.
 # Each crawl summary reports request latency (p50, p90, max).
 # Auth is Workload Identity Federation as loppan-pipeline (docs/bigquery.md §9).
+#
+# 2026-10-02: rerun for the updated contract (below_floor, Stockholm dates). The
+# sample's ids all come from the census, so none is under 150 kr; a second track
+# pass with the floor raised to 300 kr produces real below_floor rows instead,
+# without writing any price under 150 kr.
 
 on:
   push:
@@ -50,9 +55,10 @@ jobs:
           python3 loppan/bq_fetch.py census --categories "Man > Skor > Vardagsskor"
           --out census.ndjson --summary census.json
 
+      # --since is a Stockholm day, so yesterday is taken in Stockholm too.
       - name: Fetch what was listed since yesterday in the same category
         run: >
-          python3 loppan/bq_fetch.py new --since "$(date -u -d yesterday +%F)"
+          python3 loppan/bq_fetch.py new --since "$(TZ=Europe/Stockholm date -d yesterday +%F)"
           --categories "Man > Skor > Vardagsskor" --out new.ndjson
 
       - name: Track 200 of those ids, plus two that do not exist
@@ -60,12 +66,31 @@ jobs:
           python3 -c "import json; ids=[json.loads(l)['item_id'] for l in open('census.ndjson')][:200]; open('ids.txt','w').write('\n'.join(ids + ['notAnId0001', 'notAnId0002']) + '\n')"
           python3 loppan/bq_fetch.py track --ids ids.txt --out track.ndjson --runs-out runs.ndjson
 
-      - name: Validate against schema.sql
+      # Same ids, floor at 300 kr: those priced 150-299 kr come back below_floor.
+      - name: Track them again with the floor raised, for real below_floor rows
+        run: >
+          python3 loppan/bq_fetch.py track --ids ids.txt --min-price-kr 300
+          --out track_floor.ndjson --summary track_floor.json
+
+      - name: Validate against schema.sql, and scan for prices under the floor
         run: |
-          python3 loppan/bq_fetch.py validate census.ndjson --table sweep_staging
-          python3 loppan/bq_fetch.py validate new.ndjson --table sweep_staging
-          python3 loppan/bq_fetch.py validate track.ndjson --table sweep_staging
+          for f in census new track track_floor; do
+            python3 loppan/bq_fetch.py validate $f.ndjson --table sweep_staging
+          done
           python3 loppan/bq_fetch.py validate runs.ndjson --table runs
+          python3 - <<'EOF'
+          import json
+          rows = {f: [json.loads(l) for l in open(f + ".ndjson")]
+                  for f in ("census", "new", "track", "track_floor")}
+          low = [(f, r["item_id"], k, v) for f, rs in rows.items() for r in rs
+                 for k, v in r.items() if "price" in k and isinstance(v, int) and v < 15000]
+          assert not low, low[:5]
+          floored = [r for r in rows["track_floor"] if r["below_floor"]]
+          assert all(r["present"] and r["price_ore"] is None and r["old_price_ore"] is None
+                     for r in floored), "a below_floor row carries a price"
+          print(f"no price under 15,000 ore in {sum(map(len, rows.values()))} rows; "
+                f"{len(floored)} below_floor rows at a 300 kr floor")
+          EOF
 
       - name: Load into a scratch copy of sweep_staging and count
         run: |
@@ -77,10 +102,27 @@ jobs:
             loppan._sample_staging new.ndjson
           bq --location=EU load --source_format=NEWLINE_DELIMITED_JSON \
             loppan._sample_staging track.ndjson
+          bq --location=EU load --source_format=NEWLINE_DELIMITED_JSON \
+            loppan._sample_staging track_floor.ndjson
           bq --location=EU query --use_legacy_sql=false --format=pretty \
-            'select source, present, count(*) as n, countif(brand is null) as unbranded,
-                    min(price_ore) as min_price_ore, max(fetched_at) as last_fetch
-             from loppan._sample_staging group by 1, 2 order by 1, 2'
+            'select source, present, below_floor, count(*) as n,
+                    countif(brand is null) as unbranded, min(price_ore) as min_price_ore,
+                    max(fetched_at) as last_fetch
+             from loppan._sample_staging group by 1, 2, 3 order by 1, 2, 3'
+          bq --location=EU query --use_legacy_sql=false '
+            assert (select count(*) from loppan.INFORMATION_SCHEMA.COLUMNS
+                    where table_name = "_sample_staging" and column_name = "below_floor"
+                      and data_type = "BOOL") = 1
+              as "_sample_staging has no BOOL below_floor column";
+            assert (select countif(below_floor is null) from loppan._sample_staging) = 0
+              as "every row says whether it is below the floor";
+            assert (select countif(price_ore < 15000 or old_price_ore < 15000)
+                    from loppan._sample_staging) = 0
+              as "a price under 150 kr was loaded";
+            assert (select countif(below_floor and (price_ore is not null
+                                                    or old_price_ore is not null))
+                    from loppan._sample_staging) = 0
+              as "a below_floor row carries a price"'
 
       - name: Drop the scratch table
         if: always()
