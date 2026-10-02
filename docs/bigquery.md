@@ -28,7 +28,7 @@ Postgres is the better engine for a grid that sorts and filters on every click.
 
 | | Decided | Why |
 |---|---|---|
-| **Scope** | The whole marketplace, brand-filtered by the §12 rule (expensive *or* common brands). No size or price restriction | Learning what resells needs the market, not only what fits you |
+| **Scope** | The whole marketplace, brand-filtered by the §12 rule (expensive *or* common brands), asking price ≥ 150 kr at enrolment. No size restriction | Learning what resells needs the market, not only what fits you |
 | **Grain** | **One row per item**, for its whole life | The arrays below make this cheap; one grain keeps every query honest |
 | **History** | `ARRAY<STRUCT<…>>` for price and favourites, one element per *change* | An event costs ~16 bytes instead of re-storing ~300 bytes of attributes. Flat event rows would be ~8× larger |
 | **Writes** | Daily batch load (free) into staging, then `MERGE` | Streaming inserts are billed; load jobs are not |
@@ -381,11 +381,23 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
 
 **Phase 3 — Daily run**
 - [ ] Steps 1–8 of §5 as one workflow, with the 99.5% completeness gate
-- [ ] Dry-run every `MERGE` and record the bytes it scans
-- [ ] Rerun one day on purpose and confirm no array gains a duplicate element
+- [x] `merge_sweep.sql` and `merge_resolve.sql` (Circle origins, then gated outcomes),
+      tested by `test.sh` in `bq-schema.yml` on synthetic rows: a rerun is a no-op,
+      updates append only on change, duplicate source rows collapse, a stray tracked
+      id never enrols, a 99% run resolves nothing, a resolved row moves partition.
+      Green on run 37011068601, 2026-10-02
+- [ ] Dry-run bytes on real volume. On synthetic rows the merge read 375 of 468
+      table bytes, which proves nothing at that size
+- [ ] Fetcher on branch `bigquery-fetch` (in progress)
 
 **Phase 4 — Model and shortlist**
-- [ ] `price_level`, `seasonal_index`, `sell_through` scheduled queries
+- [x] `model.sql` builds `seasonal_index`, `price_level`, `sell_through` and
+      `shortlist_candidates`, reading `model_params`. Tested on known answers: with no
+      measured sales it reproduces the prior, A pools to 18,000, sell-through 0.7,
+      margin 7,600, an overpriced item is excluded, a cold item peaks in January.
+      `expected_profit_ore` stays NULL until `cost_params` is filled
+- [x] `bq-health.yml`, daily: missed run, closed completeness gate, > 10 GiB billed in
+      24 h. The cost check needs `roles/bigquery.resourceViewer` on the service account
 - [ ] Export to a **new** Supabase table; image fetch for shortlisted ids
 
 **Phase 5 — Dashboard** reads the new table
@@ -461,6 +473,13 @@ ever wanted.
 |---|---|---|
 | **Expensive**: brand median sold price ≥ `min_median_sold_kr` | Dear brands, however rare | 200 kr |
 | **Common**: brand is in the top `top_n_brands` by live listings | Cheap brands that sell in volume | 150 |
+
+**And a price floor, added 2026-10-02:** an item enrols only if its asking price is
+**≥ `min_price_kr` (150 kr)**. Like the brand gates, it applies **at enrolment only**.
+A tracked item that a markdown takes below 150 kr is followed to its outcome. Dropping
+it would delete exactly the marked-down items that then sell, which biases
+sell-through, as with brands below. The cost of the rule is known and accepted: a dear
+brand's item that is *already* under 150 kr when first seen is never enrolled.
 
 What falls out is the **cheap *and* rare** long tail, which is what "no-name" meant in
 practice. Both values are parameters in a `brand_rules` table, not constants in code.

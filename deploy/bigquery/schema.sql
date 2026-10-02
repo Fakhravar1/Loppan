@@ -151,6 +151,8 @@ USING (
          'A brand leaves only when 10% below a gate, so brands near the line do not flip'
   UNION ALL SELECT 'min_sales_measured', 20.0,
          'Sales needed before the measured sold median replaces the live-ask stand-in'
+  UNION ALL SELECT 'min_price_kr', 150.0,
+         'Enrolment floor on the asking price. Applies only when an item is first seen; a tracked item marked down below it is followed to its outcome'
 ) s
 ON t.rule = s.rule
 WHEN NOT MATCHED THEN INSERT (rule, value, note) VALUES (s.rule, s.value, s.note);
