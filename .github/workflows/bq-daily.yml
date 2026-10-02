@@ -39,7 +39,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PUSH_MODE: daily    # the mode a push to bigquery-daily runs
+  PUSH_MODE: origins  # the mode a push to bigquery-daily runs
+  PUSH_ORIGINS_MAX: "6000"   # ~3.3 h of serial Parse calls, inside the 330 min limit
 
 jobs:
   run:
@@ -63,7 +64,7 @@ jobs:
       - name: Run
         env:
           MODE: ${{ github.event_name == 'push' && env.PUSH_MODE || inputs.mode || 'daily' }}
-          ORIGINS_MAX: ${{ inputs.origins_max || '1500' }}
+          ORIGINS_MAX: ${{ github.event_name == 'push' && env.PUSH_ORIGINS_MAX || inputs.origins_max || '1500' }}
           OUT_DIR: ${{ runner.temp }}/bq-run
         run: |
           mkdir -p "$OUT_DIR"
