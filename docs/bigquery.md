@@ -439,8 +439,8 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
       (`drop_v1_pipeline_after_bigquery_move`). Database 385 MB → 13 MB. Your own
       app tables (`app_users`, `target_sizes`, `excluded_categories`,
       `shortlist_flagged`) went too, by choice: clean slate
-- [ ] 33 old `public` functions remain (`refresh_shortlist`, `sweep_begin`, …), all
-      referencing dropped tables. Drop them once confirmed unused
+- [x] The 33 orphaned v1 `public` functions dropped by exact signature, no `CASCADE`
+      (`drop_v1_orphan_functions`, 2026-10-02). Supabase's `public` schema is now empty
 - [ ] Delete or archive the four paused v1 workflows
 
 ---
