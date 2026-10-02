@@ -22,6 +22,8 @@ import argparse
 import datetime as dt
 import json
 import pathlib
+import shutil
+import subprocess
 import sys
 import time
 
@@ -307,11 +309,12 @@ def read_brands(path: str | None) -> set[str] | None:
 
 
 def crawl_to_rows(crawl: bq_shapes.Crawl, out: NDJSON, run_date: str, source: str,
-                  brands: set[str] | None) -> dict:
+                  brands: set[str] | None, floor_ore: int = 0) -> dict:
     """Run a crawl, writing one row per distinct live item. With a brand set, items
-    of other brands, and unbranded ones, are counted and dropped."""
+    of other brands, and unbranded ones, are counted and dropped. The price floor is
+    in the query; anything under it here is counted and dropped as a guard."""
     seen: set[str] = set()
-    tally = {"duplicates": 0, "dropped_by_brand": 0, "unbranded": 0}
+    tally = {"duplicates": 0, "dropped_by_brand": 0, "unbranded": 0, "below_floor": 0}
 
     def on_hits(hits):
         at = utc_now()
@@ -321,6 +324,10 @@ def crawl_to_rows(crawl: bq_shapes.Crawl, out: NDJSON, run_date: str, source: st
                 tally["duplicates"] += 1
                 continue
             seen.add(item_id)
+            price = _amount(h, "price_SE", "amount")
+            if price is None or price < floor_ore:
+                tally["below_floor"] += 1
+                continue
             brand = (h.get("metadata") or {}).get("brand")
             if not brand:
                 tally["unbranded"] += 1
@@ -338,19 +345,69 @@ def since_ms(day: str) -> int:
     return int(dt.datetime.fromisoformat(day).replace(tzinfo=dt.UTC).timestamp() * 1000)
 
 
-def cmd_new(a) -> int:
-    """Items first offered on or after --since (UTC midnight), live, in scope."""
-    dims = [bq_shapes.Dim("firstOfferedAt_SE", since_ms(a.since), bq_shapes.FAR * 1000,
-                          always=True),
-            bq_shapes.Dim("price_SE.amount", 0, 10 ** 9)]
-    crawl = bq_shapes.Crawl("isForSale:true", bq_shapes.scope(a.categories), dims,
-                            HIT_ATTRS, max_leaves=a.max_leaves)
+FLOOR_DEFAULT_KR = 150.0
+FLOOR_SQL = "select value from loppan.brand_rules where rule = 'min_price_kr'"
+
+
+def floor_from_bq() -> float | None:
+    """`min_price_kr` from loppan.brand_rules, through the `bq` CLI the Actions
+    runner has after auth. None when there is no `bq`, no credentials, or no row."""
+    exe = shutil.which("bq")
+    if not exe:
+        return None
+    try:
+        p = subprocess.run([exe, "--location=EU", "--format=json", "query",
+                            "--use_legacy_sql=false", FLOOR_SQL],
+                           capture_output=True, text=True, timeout=90)
+        rows = json.loads(p.stdout or "[]") if p.returncode == 0 else []
+        return float(rows[0]["value"]) if rows and rows[0].get("value") is not None else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, IndexError):
+        return None
+
+
+def price_floor(a) -> tuple[float, str]:
+    """The enrolment price floor in kr, and where it came from. It applies to
+    census and new only: a tracked item a markdown takes under the floor is still
+    followed to its outcome, as with the §12 brand rule."""
+    if a.min_price_kr is not None:
+        return a.min_price_kr, "--min-price-kr"
+    v = floor_from_bq()
+    if v is not None:
+        return v, "loppan.brand_rules.min_price_kr"
+    print(f"  min_price_kr not readable from BigQuery; using {FLOOR_DEFAULT_KR:g} kr",
+          file=sys.stderr)
+    return FLOOR_DEFAULT_KR, "default"
+
+
+def search_crawl(a, first_dim: bq_shapes.Dim, source: str) -> int:
+    """Shared by census and new: live, in scope, at or above the price floor.
+    price_SE.amount is öre (it is pricing.amount x 100, checked 2026-10-02)."""
+    floor_kr, floor_src = price_floor(a)
+    floor_ore = int(round(floor_kr * 100))
+    base = f"isForSale:true AND price_SE.amount>={floor_ore}"
+    dims = [first_dim, bq_shapes.Dim("price_SE.amount", floor_ore, 10 ** 9)]
+    crawl = bq_shapes.Crawl(base, bq_shapes.scope(a.categories), dims, HIT_ATTRS,
+                            max_leaves=a.max_leaves)
     out = NDJSON(a.out)
-    res = crawl_to_rows(crawl, out, a.run_date, "new", read_brands(a.brands))
+    res = crawl_to_rows(crawl, out, a.run_date, source, read_brands(a.brands), floor_ore)
     res["output"] = out.close()
-    res["new_found"] = res["output"]["rows"]
+    res["min_price_kr"] = {"value": floor_kr, "source": floor_src}
+    if source == "new":
+        res["new_found"] = res["output"]["rows"]
     emit_summary(res, a.summary)
     return 0 if res["complete"] else 2
+
+
+def cmd_new(a) -> int:
+    """Items first offered on or after --since (UTC midnight)."""
+    return search_crawl(a, bq_shapes.Dim("firstOfferedAt_SE", since_ms(a.since),
+                                         bq_shapes.FAR * 1000, always=True), "new")
+
+
+def cmd_census(a) -> int:
+    """Every live item in scope: the one-off seed. createdAt is the split axis
+    because it is on every item and never changes (see bq_shapes)."""
+    return search_crawl(a, bq_shapes.Dim("createdAt", 0, bq_shapes.FAR), "census")
 
 
 # ---------------------------------------------------------------- Parse: adjudicate, origins
@@ -493,6 +550,14 @@ def main(argv: list[str] | None = None) -> int:
                                          "other brands and unbranded items are dropped")
         sp.add_argument("--max-leaves", type=int,
                         help="stop after this many leaf shapes (for sample runs)")
+        sp.add_argument("--min-price-kr", type=float,
+                        help="enrolment floor in kr; default: loppan.brand_rules "
+                             f"min_price_kr, else {FLOOR_DEFAULT_KR:g}")
+
+    sp = sub.add_parser("census", help="one-off seed of every live item (source=census)")
+    common(sp)
+    searching(sp)
+    sp.set_defaults(fn=cmd_census)
 
     sp = sub.add_parser("new", help="items listed since a date (sweep_staging, source=new)")
     common(sp)

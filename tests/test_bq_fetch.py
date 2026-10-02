@@ -118,6 +118,32 @@ class Track(unittest.TestCase):
         self.assertTrue(run["resolve_allowed"])
 
 
+class Floor(unittest.TestCase):
+    def test_cli_override_wins_and_default_is_150(self):
+        class A:
+            min_price_kr = 99.0
+        self.assertEqual(bq_fetch.price_floor(A), (99.0, "--min-price-kr"))
+        real = bq_fetch.floor_from_bq
+        bq_fetch.floor_from_bq = lambda: None
+        try:
+            A.min_price_kr = None
+            self.assertEqual(bq_fetch.price_floor(A), (150.0, "default"))
+        finally:
+            bq_fetch.floor_from_bq = real
+
+    def test_rows_under_the_floor_are_dropped(self):
+        class FakeCrawl:
+            def run(self, on_hits):
+                cheap = dict(HIT, objectID="cheap", price_SE={"amount": 14900})
+                on_hits([HIT, cheap, HIT])
+                return {"complete": True}
+        with tempfile.TemporaryDirectory() as d:
+            out = bq_fetch.NDJSON(os.path.join(d, "c.ndjson"))
+            res = bq_fetch.crawl_to_rows(FakeCrawl(), out, "2026-10-02", "census", None, 15000)
+            out.close()
+        self.assertEqual((out.rows, res["below_floor"], res["duplicates"]), (1, 1, 1))
+
+
 class NoDatabase(unittest.TestCase):
     def test_fetch_path_never_imports_db(self):
         code = ("import sys; sys.path.insert(0, %r); import loppan.bq_fetch; "
