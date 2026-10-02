@@ -151,6 +151,8 @@ USING (
          'A brand leaves only when 10% below a gate, so brands near the line do not flip'
   UNION ALL SELECT 'min_sales_measured', 20.0,
          'Sales needed before the measured sold median replaces the live-ask stand-in'
+  UNION ALL SELECT 'min_price_kr', 150.0,
+         'Enrolment floor on the asking price. Applies only when an item is first seen; a tracked item marked down below it is followed to its outcome'
 ) s
 ON t.rule = s.rule
 WHEN NOT MATCHED THEN INSERT (rule, value, note) VALUES (s.rule, s.value, s.note);
@@ -181,3 +183,70 @@ CREATE TABLE IF NOT EXISTS loppan.seasonal_prior (
   median_kept_pct  FLOAT64 OPTIONS (description = "Median share of the opening ask kept at sale"),
   seasonal_index   FLOAT64 OPTIONS (description = "median_kept_pct / its 12-month mean. Decay, not price level: docs/bigquery.md §6")
 );
+
+-- ─── additions: append below, never edit a CREATE above ────────────────────────
+
+-- The price at first sight. For history_complete items that is the opening ask, which
+-- the model's kept-share needs. A plain column so model.sql never reads price_history.
+ALTER TABLE loppan.items ADD COLUMN IF NOT EXISTS first_price_ore INT64
+  OPTIONS (description = "Price at first sight, öre. The opening ask only when history_complete");
+
+CREATE TABLE IF NOT EXISTS loppan.model_params (
+  rule             STRING NOT NULL,
+  value            FLOAT64,
+  note             STRING
+)
+OPTIONS (description = "Pooling weights and export limits read by model.sql. docs/bigquery.md §6-§7");
+
+MERGE loppan.model_params t
+USING (
+  SELECT 'k_level' AS rule, 20.0 AS value,
+         'Pseudo-sales pulling a brand x category price level toward its category' AS note
+  UNION ALL SELECT 'k_season', 30.0,
+         'Pseudo-sales of weight the seasonal prior keeps in each group x month cell'
+  UNION ALL SELECT 'k_sell', 20.0,
+         'Pseudo-resolutions pulling brand x category sell-through toward its category'
+  UNION ALL SELECT 'window_days', 365.0,
+         'How far back sales and resolutions count'
+  UNION ALL SELECT 'export_max_pct_of_expected', 60.0,
+         'Loosest bargain threshold exported to the shortlist; the dashboard filters tighter'
+  UNION ALL SELECT 'export_top_n', 30000.0,
+         'Cap on exported candidates, ranked by sell-through-weighted gross margin'
+) s
+ON t.rule = s.rule
+WHEN NOT MATCHED THEN INSERT (rule, value, note) VALUES (s.rule, s.value, s.note);
+
+-- 2026-10-02, from the fetcher's findings ──────────────────────────────────────
+
+-- Parse's raw itemStatus beside the verdict, so the reason for an 'unknown' (and
+-- distinctions the verdict folds together) survives.
+ALTER TABLE loppan.adjudication_staging ADD COLUMN IF NOT EXISTS item_status STRING
+  OPTIONS (description = "Parse itemStatus as returned, before mapping to outcome");
+
+-- When the reseller bought the original. origin_of returns it; it was being dropped.
+ALTER TABLE loppan.circle_origin_staging ADD COLUMN IF NOT EXISTS bought_on DATE;
+
+-- A top-level column, not a new circle_origin field: DDL cannot add a field to an
+-- existing STRUCT column.
+ALTER TABLE loppan.items ADD COLUMN IF NOT EXISTS circle_bought_on DATE
+  OPTIONS (description = "Circle only: the date the reseller bought the original");
+
+ALTER TABLE loppan.items ALTER COLUMN category SET OPTIONS (
+  description = "Category path as enrol.row_of reads it: the first level-2 path, three levels deep. A fourth level exists and is not kept");
+
+ALTER TABLE loppan.brand_exclusions SET OPTIONS (
+  description = "Named brands always out of scope. Unbranded items have no brand at all (brand IS NULL) and are excluded by that rule, not by a row here");
+
+-- 2026-10-02: 150 kr is a hard filter. No price under it is ever stored ─────────────
+
+-- Set by the fetcher when a tracked item's price is now under min_price_kr. It then
+-- writes no price for that row. merge_sweep.sql closes the item as below_floor.
+ALTER TABLE loppan.sweep_staging ADD COLUMN IF NOT EXISTS below_floor BOOL
+  OPTIONS (description = "A tracked item now priced under min_price_kr. Its price is not written");
+
+ALTER TABLE loppan.items ALTER COLUMN outcome SET OPTIONS (
+  description = "NULL while listed; sold | expired | unknown from Parse adjudication; below_floor when a markdown took it under min_price_kr, closed without storing that price");
+
+UPDATE loppan.brand_rules
+SET note = 'Hard filter: no item or price under this is ever stored. A tracked item marked down below it is closed as below_floor'
+WHERE rule = 'min_price_kr';

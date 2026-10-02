@@ -1,0 +1,69 @@
+name: bq-archive
+
+# One-off, 2026-10-02: copy the two Supabase tables that cannot be collected again into
+# BigQuery, before the old Supabase tables are dropped (docs/bigquery.md §10).
+#   circle_origins    ~15k Circle purchase prices; the originals may no longer exist
+#   season_clearings  the 1,497 price histories behind deploy/bigquery/seasonal_prior.csv
+# They land as loppan.archive_*, outside the pipeline. JSON columns become JSON strings
+# so the load never trips on schema autodetection. Safe to rerun: --replace.
+# The data goes Supabase -> runner -> BigQuery and never touches the repository.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/bq-archive.yml
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Export from Supabase
+        env:
+          LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, re, urllib.request
+          base = "https://zgqywowejxtokqsybqnu.supabase.co/rest/v1"
+          key = os.environ["LOPPAN_SUPABASE_KEY"].strip().lstrip("\ufeff").strip()  # BOM: db._clean
+          head = {"apikey": key, "Authorization": f"Bearer {key}", "Prefer": "count=exact"}
+          for table in ("circle_origins", "season_clearings"):
+              rows, total, page = [], None, 1000
+              while total is None or len(rows) < total:
+                  url = f"{base}/{table}?select=*&order=item_id&limit={page}&offset={len(rows)}"
+                  with urllib.request.urlopen(urllib.request.Request(url, headers=head), timeout=60) as r:
+                      total = int(re.search(r"/(\d+)$", r.headers["Content-Range"]).group(1))
+                      batch = json.load(r)
+                  if not batch:
+                      break
+                  rows += batch
+              assert len(rows) == total, f"{table}: fetched {len(rows)} of {total}"
+              with open(f"{table}.ndjson", "w", encoding="utf-8") as fh:
+                  for row in rows:
+                      flat = {k: json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v
+                              for k, v in row.items()}
+                      fh.write(json.dumps(flat, ensure_ascii=False) + "\n")
+              print(f"{table}: {len(rows)} rows (Supabase count {total})")
+          EOF
+
+      - name: Load into BigQuery
+        run: |
+          for t in circle_origins season_clearings; do
+            bq --location=EU load --replace --autodetect --source_format=NEWLINE_DELIMITED_JSON \
+              "loppan.archive_$t" "$t.ndjson"
+            bq --location=EU query --use_legacy_sql=false --format=pretty \
+              "select '$t' as archive, count(*) as n from loppan.archive_$t"
+          done
