@@ -57,10 +57,13 @@ The rest of this file already includes them.
    plan on **3–6M live items** until the census in Phase 2 measures it. §8 is redone on
    that basis. BigQuery still costs only a few dollars. The real constraint moves to
    collection time (§5).
-   **Measured 2026-10-02 by the fetcher:** 10,275,128 live clothing and shoe listings
-   at all prices. The 150 kr floor and the §12 rule cut that substantially; the exact
-   in-scope count comes from the census. Fetching by id turned out far cheaper than
-   feared (§5 step 2), so collection time is not the constraint after all.
+   **Measured exactly, 2026-10-02 (sums of 473 and 1,298 disjoint shapes, every one
+   exhaustive):** 10,273,249 live wearables at all prices; **2,494,188 at ≥ 150 kr**
+   (68.8% Kvinna > Kläder); **~2.30M under the full §12 rule**. That is *below* the
+   3–6M range. The 5.9M figure came from estimated counts, which miss in both
+   directions: the ≥ 150 kr count was estimated at 6.84M one time and 4.74M another,
+   against an exact 2.49M. Fetching by id is cheap too (§5 step 2), so collection time
+   is not the constraint after all.
 2. **Track known items by id; only search for new ones.** Re-searching the whole market
    every day cannot see past ~2,400 results per query shape, and an incomplete shape
    looks exactly like a mass sale. Instead, fetch every known live id with
@@ -317,10 +320,12 @@ thousands and the prior has effectively no weight.
 
 Estimates, to be replaced with measurements after Phase 2. They assume 3–6M live items,
 roughly 25–50k listed per day (so 9–18M items seen per year), and ~0.5 KB per item at
-resolution. ⚠️ **Measured inflow at all prices is 51k–181k a day** (110–180k on
-weekdays), against the assumed 25–50k. The 150 kr floor removes roughly 40–60% and the
-§12 rule about half of the rest, which lands near the assumption. Redo this table with
-the census's in-scope count. Staging rows measured 470–570 bytes, as assumed.
+resolution. **Measured 2026-10-02:** 2.30M live in scope, and **~42k listed a day
+under the full rule** (46.2k at ≥ 150 kr, exact per day, weekdays 42–69k, Sundays
+~18k; lower bounds, since items sold since listing are missing). That is ~15M items a
+year, the top of the assumed range. Year-1 storage is therefore **~8–9 GB, at the free
+10 GiB line**, and the daily `MERGE` reads ~1.2 GB of live partition (~35 GB a month).
+Staging rows are 470–630 bytes.
 
 | | Year 1 | Year 3 |
 |---|---|---|
@@ -395,6 +400,11 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
       and `merge_sweep.sql` enrolling only in-scope, non-NULL brands
 - [ ] Fetcher emits `item_status` (adjudication) and `bought_on` (origins), added to
       the contract after the fetcher was built
+- [ ] Fetcher dates in Stockholm time, not UTC: a listing just after local midnight
+      currently gets the previous day
+- [ ] **Decide the brand-median basis** (§12): over all of a brand's live asks, or only
+      those ≥ 150 kr. Over ≥ 150 kr, the expensive gate passes almost every brand and
+      the rule removes ~8% of items; over all asks it removes ~28%
 - [ ] Fan-out search over brand × category × price band to enrol every live,
       brand-filtered item. Assert every query shape is exhaustive
 - [ ] **Measure:** live count, bytes per row, listings per day over the first week.
