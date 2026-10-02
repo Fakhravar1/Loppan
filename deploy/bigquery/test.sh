@@ -10,7 +10,8 @@ cd "$(dirname "$0")"
 
 BQ=(bq --location=EU --quiet query --use_legacy_sql=false --format=none)
 TABLES=(items sweep_staging adjudication_staging circle_origin_staging runs model_params
-        brand_rules seasonal_index price_level sell_through shortlist_candidates)
+        brand_rules kosher_brands brand_counts_staging
+        seasonal_index price_level sell_through shortlist_candidates)
 
 cleanup() {
   for t in "${TABLES[@]}"; do bq --location=EU rm -f -t "loppan._t_$t" >/dev/null 2>&1 || true; done
@@ -38,7 +39,11 @@ CREATE OR REPLACE TABLE loppan._t_circle_origin_staging LIKE loppan.circle_origi
 CREATE OR REPLACE TABLE loppan._t_runs                  LIKE loppan.runs;
 CREATE OR REPLACE TABLE loppan._t_model_params          LIKE loppan.model_params;
 CREATE OR REPLACE TABLE loppan._t_brand_rules           LIKE loppan.brand_rules;
-INSERT loppan._t_brand_rules (rule, value) VALUES ('min_price_kr', 150);
+INSERT loppan._t_brand_rules (rule, value) VALUES
+  ('min_price_kr', 150), ('min_listings', 20);
+CREATE OR REPLACE TABLE loppan._t_kosher_brands         LIKE loppan.kosher_brands;
+INSERT loppan._t_kosher_brands (brand, listings, kosher_since, counted_on)
+VALUES ('Acme', 500, CURRENT_DATE(), CURRENT_DATE());   -- 'Tiny' has no row: not kosher
 INSERT loppan._t_model_params (rule, value) VALUES
   ('k_level', 20), ('k_season', 30), ('k_sell', 20), ('window_days', 365),
   ('export_max_pct_of_expected', 60), ('export_top_n', 30000);
@@ -84,13 +89,19 @@ VALUES
    'Acme', 'Man > Skor', 0, FALSE, '$D2'),
   ('$D2', 'F', 'new',    TRUE, TRUE, CURRENT_TIMESTAMP(), 25000, 1, FALSE,
    'Acme', 'Barn > Kläder', 0, FALSE, '$D2'),
+  ('$D2', 'E', 'new',    TRUE, TRUE, CURRENT_TIMESTAMP(), 20000, 0, FALSE,
+   'Acme', 'Kvinna > Skor', 0, FALSE, '$D2'),
+  ('$D2', 'G', 'new',    TRUE, TRUE, CURRENT_TIMESTAMP(), 30000, 0, FALSE,
+   'Tiny', 'Man > Skor', 0, FALSE, '$D2'),
+  ('$D2', 'H', 'new',    TRUE, TRUE, CURRENT_TIMESTAMP(), 30000, 0, FALSE,
+   NULL, 'Man > Skor', 0, FALSE, '$D2'),
   ('$D2', 'Z', 'track',  TRUE, TRUE, CURRENT_TIMESTAMP(),  1000, 0, FALSE, NULL, NULL, NULL, NULL, NULL);
 EOF
 run_file merge_sweep.sql "$D2"
 run_file merge_sweep.sql "$D2"
 sql <<EOF
-ASSERT (SELECT COUNT(*) FROM loppan._t_items) = 4
-  AS 'day 2: A, B, C, F. Duplicate C collapses, D (90 kr) is under the floor, stray Z never enrols';
+ASSERT (SELECT COUNT(*) FROM loppan._t_items) = 5
+  AS 'day 2: A, B, C, E, F. Duplicate C collapses; D is under the floor, G not kosher, H unbranded, Z stray';
 ASSERT (SELECT ARRAY_LENGTH(price_history) FROM loppan._t_items WHERE item_id = 'A') = 2
   AS 'A markdown appended once';
 ASSERT (SELECT price_history[OFFSET(1)].price_ore FROM loppan._t_items WHERE item_id = 'A') = 27000
@@ -105,20 +116,22 @@ ASSERT (SELECT ARRAY_LENGTH(price_history) FROM loppan._t_items WHERE item_id = 
   AS 'unchanged price appends nothing';
 ASSERT (SELECT brand FROM loppan._t_items WHERE item_id = 'A') = 'Acme'
   AS 'a track row with null attributes must not blank them';
-ASSERT (SELECT COUNTIF(updated_run = '$D2') FROM loppan._t_items) = 4 AS 'all stamped day 2';
+ASSERT (SELECT COUNTIF(updated_run = '$D2') FROM loppan._t_items) = 5 AS 'all stamped day 2';
 EOF
-pass "day 2: change-only appends, dedupe, no stray enrolment, floor on enrolment, attributes kept"
+pass "day 2: change-only appends, dedupe, no stray enrolment, floor + kosher on enrolment, attributes kept"
 
 # ── Day 3: A vanishes and sold, B gets its Circle origin; gate closed, then open ──
 sql <<EOF
 INSERT loppan._t_sweep_staging (run_date, item_id, source, present, fetched_at, price_ore,
   favourites, below_floor)
 VALUES ('$D3', 'A', 'track', FALSE, CURRENT_TIMESTAMP(), NULL,  NULL, NULL),
+       ('$D3', 'E', 'track', FALSE, CURRENT_TIMESTAMP(), NULL,  NULL, NULL),
        ('$D3', 'B', 'track', TRUE,  CURRENT_TIMESTAMP(), 45000, 3,    NULL),
        ('$D3', 'C', 'track', TRUE,  CURRENT_TIMESTAMP(), 14000, 0,    NULL),
        ('$D3', 'F', 'track', TRUE,  CURRENT_TIMESTAMP(), NULL,  1,    TRUE);
 INSERT loppan._t_adjudication_staging (run_date, item_id, outcome, final_price_ore, adjudicated_at)
-VALUES ('$D3', 'A', 'sold', 27000, CURRENT_TIMESTAMP());
+VALUES ('$D3', 'A', 'sold', 27000, CURRENT_TIMESTAMP()),
+       ('$D3', 'E', 'sold', 12000, CURRENT_TIMESTAMP());
 INSERT loppan._t_circle_origin_staging (run_date, item_id, original_id, bought_price_ore,
   opening_ore, rungs, fetched_at, bought_on)
 VALUES ('$D3', 'B', 'B0', 12000, 40000, 6, CURRENT_TIMESTAMP(), DATE_SUB('$D3', INTERVAL 30 DAY));
@@ -162,9 +175,15 @@ sql <<EOF
 ASSERT (SELECT outcome FROM loppan._t_items WHERE item_id = 'A') = 'sold' AS 'A resolved once the gate opens';
 ASSERT (SELECT resolved_on FROM loppan._t_items WHERE item_id = 'A') = '$D3' AS 'resolved on the run date';
 ASSERT (SELECT final_price_ore FROM loppan._t_items WHERE item_id = 'A') = 27000 AS 'final price from Parse';
+ASSERT (SELECT outcome FROM loppan._t_items WHERE item_id = 'E') = 'below_floor'
+  AS 'a final ask under 150 kr closes as below_floor';
+ASSERT (SELECT final_price_ore IS NULL FROM loppan._t_items WHERE item_id = 'E')
+  AS 'and its sub-floor final price is not stored';
+ASSERT (SELECT COUNTIF(final_price_ore < 15000) FROM loppan._t_items) = 0
+  AS 'no final price under 150 kr is stored';
 ASSERT (SELECT COUNT(*) FROM loppan._t_items WHERE resolved_on IS NULL) = 1
-  AS 'A, C and F left the live partition; only B is live';
-ASSERT (SELECT COUNT(*) FROM loppan._t_items) = 4 AS 'resolving moved rows, it did not copy them';
+  AS 'A, C, E and F left the live partition; only B is live';
+ASSERT (SELECT COUNT(*) FROM loppan._t_items) = 5 AS 'resolving moved rows, it did not copy them';
 EOF
 pass "day 3: gate open, resolves once, row moves partition"
 
@@ -174,6 +193,31 @@ merge_bytes=$(retarget merge_sweep.sql | bq --location=EU query --use_legacy_sql
 table_bytes=$(bq --location=EU query --use_legacy_sql=false --dry_run \
   'select * from loppan._t_items' 2>&1 | grep -oE '[0-9]+ bytes' | head -1 || true)
 echo "  info  merge_sweep dry run reads ${merge_bytes:-?}; the whole items table is ${table_bytes:-?}"
+
+# ── Kosher list: joins at 20, never leaves ──────────────────────────────────
+sql <<EOF
+CREATE OR REPLACE TABLE loppan._t_brand_counts_staging LIKE loppan.brand_counts_staging;
+CREATE OR REPLACE TABLE loppan._t_kosher_brands LIKE loppan.kosher_brands;
+INSERT loppan._t_kosher_brands (brand, listings, kosher_since, counted_on)
+VALUES ('Dipped', 25, '$D1', '$D1'), ('Missing', 40, '$D1', '$D1');
+INSERT loppan._t_brand_counts_staging (run_date, brand, listings) VALUES
+  ('$D3', 'Dipped', 5), ('$D3', 'New20', 20), ('$D3', 'New25', 25), ('$D3', 'New19', 19);
+EOF
+run_file kosher.sql "$D3"
+run_file kosher.sql "$D3"   # rerun: no change
+sql <<EOF
+ASSERT (SELECT COUNT(*) FROM loppan._t_kosher_brands) = 4
+  AS 'Dipped and Missing stay, New20 and New25 join, New19 does not; the rerun added nothing';
+ASSERT (SELECT listings = 5 AND kosher_since = '$D1' FROM loppan._t_kosher_brands WHERE brand = 'Dipped')
+  AS 'a brand that dips to 5 stays kosher, with its count updated and its join date kept';
+ASSERT (SELECT COUNT(*) FROM loppan._t_kosher_brands WHERE brand = 'Missing') = 1
+  AS 'a brand absent from a count is not removed';
+ASSERT (SELECT kosher_since = '$D3' FROM loppan._t_kosher_brands WHERE brand = 'New20')
+  AS 'exactly 20 joins';
+ASSERT (SELECT COUNT(*) FROM loppan._t_kosher_brands WHERE brand = 'New19') = 0
+  AS '19 does not join';
+EOF
+pass "kosher: joins at 20, never leaves, absent is not removed, rerun is a no-op"
 
 # ── Model: a fresh items table with known answers ───────────────────────────
 sql <<'EOF'

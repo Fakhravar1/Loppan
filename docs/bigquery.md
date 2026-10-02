@@ -28,7 +28,7 @@ Postgres is the better engine for a grid that sorts and filters on every click.
 
 | | Decided | Why |
 |---|---|---|
-| **Scope** | The whole marketplace, brand-filtered by the §12 rule (expensive *or* common brands), asking price ≥ 150 kr at enrolment. No size restriction | Learning what resells needs the market, not only what fits you |
+| **Scope** | The whole marketplace: kosher brands only (§12, ≥ 20 live listings ≥ 150 kr), and nothing under 150 kr ever stored. No size restriction | Learning what resells needs the market, not only what fits you |
 | **Grain** | **One row per item**, for its whole life | The arrays below make this cheap; one grain keeps every query honest |
 | **History** | `ARRAY<STRUCT<…>>` for price and favourites, one element per *change* | An event costs ~16 bytes instead of re-storing ~300 bytes of attributes. Flat event rows would be ~8× larger |
 | **Writes** | Daily batch load (free) into staging, then `MERGE` | Streaming inserts are billed; load jobs are not |
@@ -396,15 +396,15 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
       `bq_fetch.py` census / track / new / adjudicate / origins / brands / validate,
       stdlib only, no Supabase import (tested). Samples loaded into BigQuery from
       Actions three times, all green
-- [ ] Brand scope in SQL (§12 day-one plan): a `brand_scope` table from staged medians,
-      and `merge_sweep.sql` enrolling only in-scope, non-NULL brands
-- [ ] Fetcher emits `item_status` (adjudication) and `bought_on` (origins), added to
-      the contract after the fetcher was built
-- [ ] Fetcher dates in Stockholm time, not UTC: a listing just after local midnight
-      currently gets the previous day
-- [ ] **Decide the brand-median basis** (§12): over all of a brand's live asks, or only
-      those ≥ 150 kr. Over ≥ 150 kr, the expensive gate passes almost every brand and
-      the rule removes ~8% of items; over all asks it removes ~28%
+- [x] Kosher list in SQL: `kosher_brands`, `brand_counts_staging`, `kosher.sql`, and
+      `merge_sweep.sql` enrolling only kosher brands. Tested
+- [ ] `bq_fetch.py brands` counting at ≥ 150 kr and writing `brand_counts_staging` NDJSON
+- [x] Fetcher dates in Stockholm time (`first_offered`, `run_date`, `new --since`),
+      plus `item_status`, `bought_on` and the `below_floor` flag. Branch
+      `bigquery-fetch` at a5d042c, 21 tests, Actions sample load green
+- [ ] `bought_on` is still Parse's UTC date (`outcomes.origin_of`), so a purchase in the
+      last hour or two before UTC midnight lands on the wrong Stockholm day
+- [x] Brand rule decided: the kosher list (§12), replacing the median gate
 - [ ] Fan-out search over brand × category × price band to enrol every live,
       brand-filtered item. Assert every query shape is exhaustive
 - [ ] **Measure:** live count, bytes per row, listings per day over the first week.
@@ -439,8 +439,8 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
       (`drop_v1_pipeline_after_bigquery_move`). Database 385 MB → 13 MB. Your own
       app tables (`app_users`, `target_sizes`, `excluded_categories`,
       `shortlist_flagged`) went too, by choice: clean slate
-- [ ] 33 old `public` functions remain (`refresh_shortlist`, `sweep_begin`, …), all
-      referencing dropped tables. Drop them once confirmed unused
+- [x] The 33 orphaned v1 `public` functions dropped by exact signature, no `CASCADE`
+      (`drop_v1_orphan_functions`, 2026-10-02). Supabase's `public` schema is now empty
 - [ ] Delete or archive the four paused v1 workflows
 
 ---
@@ -481,7 +481,7 @@ tables; the strata and `sample_weight` machinery in `enrol.py`; `cohort.py`,
 `pool_refresh.py`; and the four workflows paused on 2026-08-19.
 
 **The two irreplaceable tables were archived, not discarded.** On 2026-10-02,
-`bq-archive.yml` copied Supabase's `circle_origins` (16,172 Circle purchase prices) and
+`bq-archive.yml` (since removed: its one job was done) copied Supabase's `circle_origins` (16,172 Circle purchase prices) and
 `season_clearings` (the 1,497 histories behind the seasonal prior) into
 `loppan.archive_circle_origins` and `loppan.archive_season_clearings`. BigQuery's
 counts match Supabase's exactly. They sit outside the pipeline. JSON columns are stored
@@ -505,58 +505,57 @@ as JSON strings.
 
 ---
 
-## 12. The brand rule
+## 12. The brand rule: the kosher list
 
-**Decided 2026-10-02.** A brand is in scope if **either** holds:
+**Decided 2026-10-02** (replacing the earlier expensive-or-common rule the same day).
+A brand becomes **kosher** the first time it has **≥ `min_listings` (20) live listings at
+or above the 150 kr floor**, and **stays kosher for good**. The list in `kosher_brands`
+only ever grows, so a brand is never dropped because it dips under 20 for a while.
+Only kosher brands enrol new items. The point is to keep out one-off
+items and tiny labels, not cheap brands. Every former top-150 brand has ≥ 2,500
+listings and passes automatically.
 
-| Gate | Keeps | Starting value |
-|---|---|---|
-| **Expensive**: brand median sold price ≥ `min_median_sold_kr` | Dear brands, however rare | 200 kr |
-| **Common**: brand is in the top `top_n_brands` by live listings | Cheap brands that sell in volume | 150 |
+```
+weekly:  count live listings ≥150 kr per brand ──► kosher_brands
+                                                    joins at ≥ 20 · never leaves
+daily:   fetch ≥150 kr ──► sweep_staging ──► merge_sweep enrols an item only if
+                                             its brand is kosher (unbranded never is)
+```
 
-**And a hard price floor, 2026-10-02: nothing under 150 kr is ever stored.**
-`min_price_kr` = 150. An item under it never enrols. When a markdown takes a tracked
-item under it, the fetcher sends no price (`below_floor = TRUE` in staging) and
-`merge_sweep.sql` closes the row with outcome **`below_floor`**, keeping its last price
-at or above the floor. A price comparison in the merge is the backstop, and `test.sh`
-asserts that no current or historical price under 15,000 öre exists. Sell-through
-counts `below_floor` as **not sold**: the item was marked down past 150 kr without
-selling, which is exactly what a reseller needs counted. Leaving it out would bias
-sell-through upward. The floor is separate from the brand medians below.
+- **Counted at ≥ 150 kr**, the same set of items we store, so the list and the data
+  agree. `bq_fetch.py brands` sums brand counts over shapes small enough to be exact.
+  A single facet call over the whole scope inflates counts by up to 2.3×.
+- **Add-only, so nothing flaps.** The list never shrinks. A dip below 20, or a brand
+  missing from one week's count, changes nothing. `listings` and `counted_on` update
+  each week for reference only.
+- **Unbranded items are never kosher.** Measured 2026-10-02, an unbranded item has no
+  brand key at all (`brand IS NULL`). It matches no row, so it never enrols.
+- **Enforced in SQL, not in the fetcher.** The fetcher stages everything ≥ 150 kr, and
+  `merge_sweep.sql` joins `kosher_brands`. Since nothing is ever removed, a partial or
+  failed count can only delay an addition. On day one, the first `brands` count and
+  `kosher.sql` run before the census. An empty list enrols nothing, which fails safe.
+- `brand_exclusions` stays for naming any brand to keep out regardless.
 
-What falls out is the **cheap *and* rare** long tail, which is what "no-name" meant in
-practice. Both values are parameters in a `brand_rules` table, not constants in code.
-150 is a starting point. Set it from measured coverage in Phase 2: how much of the
-market the top N covers, and where adding more brands stops changing the shortlist.
-200 kr matches the floor the old pool used (`analytics.md`).
+**The hard price floor (2026-10-02): no asking price under 150 kr is ever stored.**
+`min_price_kr` = 150, separate from the kosher list. An item under it never enrols.
+When a markdown takes a tracked item under it, the fetcher sends no price
+(`below_floor = TRUE` in staging) and `merge_sweep.sql` closes the row with outcome
+**`below_floor`**, keeping its last price at or above the floor. A price comparison in
+the merge is the backstop. **Final prices are held to it too:** Parse's last ask can be
+under 150 kr if a markdown crossed the floor between runs, and `merge_resolve.sql` then
+closes the item as `below_floor` with no final price. Sell-through counts `below_floor`
+as **not sold**: the item went past 150 kr without selling, which is what a reseller
+needs counted, and leaving it out would bias sell-through upward. `test.sh` asserts that
+no current, historical or final price under 15,000 öre exists. The floor is about
+*asking* prices: a Circle reseller's purchase price (`circle_origin.bought_price_ore`)
+is what they paid the marketplace, and is stored whatever it is.
 
-Three details that make it work:
+**Size, from the tester's exact counts (≥ 150 kr):** 42,365 brands counted. 4,962 have
+≥ 20 listings, 10,836 have ≥ 5, and roughly 37k more appear only as one-offs. Those
+~5,000 brands should hold most of the 2.49M items. The census gives the exact figure.
 
-- **Unbranded items are excluded as `brand IS NULL`.** There is no placeholder label:
-  measured 2026-10-02, an unbranded item has no brand key at all, in the index and in
-  Parse, so it never appears in the brand facet. That is up to 27.7% of listings. Its
-  `brand_tier` is meaningless, because the marketplace still attaches a price point.
-  `brand_exclusions` is for named brands only.
-- **Day one has no sold prices.** We start fresh, so on day one the "expensive" gate
-  uses the brand's **median live ask** from Algolia, with `brand_tier` as a tiebreak. Live
-  asks run higher than sold prices (unsold items linger at high asks), so the stand-in
-  lets slightly more brands in, which is the safe direction. From the first monthly
-  re-evaluation with ≥ 20 sales per brand, the measured sold median replaces it.
-- **Re-evaluated monthly, with a margin.** A brand enters when it clears a gate and
-  leaves only when it falls 10% below it, so brands near the line don't flip in and out.
-  **A brand that leaves stops enrolling new items, but its tracked items are followed to
-  their outcome.** Dropping them mid-life would delete exactly the unsold items and bias
-  sell-through upward.
-
-Availability comes from `bq_fetch.py brands`, which sums counts over 470 parts that are
-each small enough to count exactly. One query over the whole scope only estimates.
-Measured 2026-10-02 over 10.3M live clothing and shoe listings: the top 50 brands cover
-35.1%, 100 43.5%, **150 48.6%**, 200 52.3%, 300 57.5%.
-
-**The facet limit matters for the expensive gate.** The brand facet stops at ~1,000
-values, and medians were priced for the top 700 only. There, 108 brands passed
-≥ 200 kr, 13 of them already in the top 150, so 245 brands covered 51.5% of listings.
-Rare expensive brands below rank 700 were not priced. **Day-one plan:** census
-everything ≥ 150 kr into `sweep_staging` without a brand filter, compute every brand's
-median ask in SQL, and let `merge_sweep.sql` enrol only in-scope brands. Staging expires
-in 7 days, so the out-of-scope rows cost nothing lasting.
+Tested in `test.sh`:
+- The merge enrols kosher brands only, skipping a non-kosher brand and an unbranded item.
+- The refresh adds brands at 20 and 25 but not at 19.
+- It keeps a kosher brand that dipped to 5, and one missing from the count.
+- A rerun adds nothing.
