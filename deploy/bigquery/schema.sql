@@ -143,16 +143,8 @@ OPTIONS (description = "docs/bigquery.md §12. A brand is in scope if expensive 
 
 MERGE loppan.brand_rules t
 USING (
-  SELECT 'min_median_sold_kr' AS rule, 200.0 AS value,
-         'Expensive gate: brand median sold price at or above this' AS note
-  UNION ALL SELECT 'top_n_brands', 150.0,
-         'Common gate: top N brands by live listings. Soft; tune from measured coverage'
-  UNION ALL SELECT 'exit_margin', 0.10,
-         'A brand leaves only when 10% below a gate, so brands near the line do not flip'
-  UNION ALL SELECT 'min_sales_measured', 20.0,
-         'Sales needed before the measured sold median replaces the live-ask stand-in'
-  UNION ALL SELECT 'min_price_kr', 150.0,
-         'Hard filter: no asking price under this is ever stored. A tracked item marked down below it is closed as below_floor'
+  SELECT 'min_price_kr' AS rule, 150.0 AS value,
+         'Hard filter: no asking price under this is ever stored. A tracked item marked down below it is closed as below_floor' AS note
 ) s
 ON t.rule = s.rule
 WHEN NOT MATCHED THEN INSERT (rule, value, note) VALUES (s.rule, s.value, s.note);
@@ -266,11 +258,13 @@ OPTIONS (partition_expiration_days = 35);
 CREATE TABLE IF NOT EXISTS loppan.kosher_brands (
   brand            STRING NOT NULL,
   listings         INT64   OPTIONS (description = "Live listings at or above min_price_kr at the last count"),
-  kosher           BOOL NOT NULL OPTIONS (description = "Enrols new items. Joins at min_listings, leaves below min_listings x (1 - exit_margin)"),
-  kosher_since     DATE,
+  kosher_since     DATE    OPTIONS (description = "The count run that first saw min_listings"),
   counted_on       DATE
 )
-OPTIONS (description = "The kosher list: brands with enough live listings to be real brands rather than one-offs. Refreshed weekly by kosher.sql");
+OPTIONS (description = "The kosher list: brands that have at some point had min_listings live listings at or above the floor. Add-only: once kosher, always kosher. Grown weekly by kosher.sql");
+
+-- The list was first created with a kosher flag; membership is now the row itself.
+ALTER TABLE loppan.kosher_brands DROP COLUMN IF EXISTS kosher;
 
 MERGE loppan.brand_rules t
 USING (SELECT 'min_listings' AS rule, 20.0 AS value,
@@ -278,13 +272,9 @@ USING (SELECT 'min_listings' AS rule, 20.0 AS value,
 ON t.rule = s.rule
 WHEN NOT MATCHED THEN INSERT (rule, value, note) VALUES (s.rule, s.value, s.note);
 
-UPDATE loppan.brand_rules
-SET note = 'A kosher brand leaves the list only below min_listings x (1 - this), so a brand near the line does not flip weekly'
-WHERE rule = 'exit_margin';
-
 -- The expensive / common gates and the sold-median machinery they needed are gone.
 DELETE FROM loppan.brand_rules
-WHERE rule IN ('min_median_sold_kr', 'top_n_brands', 'min_sales_measured');
+WHERE rule IN ('min_median_sold_kr', 'top_n_brands', 'min_sales_measured', 'exit_margin');
 
 ALTER TABLE loppan.brand_rules SET OPTIONS (
-  description = "docs/bigquery.md §12: a brand is kosher with min_listings live listings at or above min_price_kr");
+  description = "docs/bigquery.md §12: a brand becomes kosher, for good, once it has min_listings live listings at or above min_price_kr");

@@ -21,7 +21,7 @@ MERGE loppan.items t
 USING (
   SELECT st.*, k.brand IS NOT NULL AS is_kosher
   FROM loppan.sweep_staging st
-  LEFT JOIN loppan.kosher_brands k ON k.brand = st.brand AND k.kosher
+  LEFT JOIN loppan.kosher_brands k ON k.brand = st.brand
   WHERE st.run_date = @run AND st.present
   -- An id can arrive twice in one run (tracked, and also found as new on an overlap
   -- day). MERGE needs one source row per target row: prefer the tracked fetch.

@@ -508,14 +508,16 @@ as JSON strings.
 ## 12. The brand rule: the kosher list
 
 **Decided 2026-10-02** (replacing the earlier expensive-or-common rule the same day).
-A brand is **kosher** when it has **≥ `min_listings` (20) live listings at or above the
-150 kr floor**. Only kosher brands enrol new items. The point is to keep out one-off
+A brand becomes **kosher** the first time it has **≥ `min_listings` (20) live listings at
+or above the 150 kr floor**, and **stays kosher for good**. The list in `kosher_brands`
+only ever grows, so a brand is never dropped because it dips under 20 for a while.
+Only kosher brands enrol new items. The point is to keep out one-off
 items and tiny labels, not cheap brands. Every former top-150 brand has ≥ 2,500
 listings and passes automatically.
 
 ```
 weekly:  count live listings ≥150 kr per brand ──► kosher_brands
-                                                    joins at ≥ 20 · leaves below 18
+                                                    joins at ≥ 20 · never leaves
 daily:   fetch ≥150 kr ──► sweep_staging ──► merge_sweep enrols an item only if
                                              its brand is kosher (unbranded never is)
 ```
@@ -523,18 +525,15 @@ daily:   fetch ≥150 kr ──► sweep_staging ──► merge_sweep enrols an
 - **Counted at ≥ 150 kr**, the same set of items we store, so the list and the data
   agree. `bq_fetch.py brands` sums brand counts over shapes small enough to be exact.
   A single facet call over the whole scope inflates counts by up to 2.3×.
-- **A margin stops flapping.** A brand joins at 20 and leaves only below
-  `min_listings × (1 − exit_margin)` = 18. Between the two it keeps its status.
-- **A brand that leaves keeps its tracked items** until their outcome. Only new
-  enrolment stops. Dropping them would delete exactly the unsold items and bias
-  sell-through upward.
+- **Add-only, so nothing flaps.** The list never shrinks. A dip below 20, or a brand
+  missing from one week's count, changes nothing. `listings` and `counted_on` update
+  each week for reference only.
 - **Unbranded items are never kosher.** Measured 2026-10-02, an unbranded item has no
   brand key at all (`brand IS NULL`). It matches no row, so it never enrols.
 - **Enforced in SQL, not in the fetcher.** The fetcher stages everything ≥ 150 kr, and
-  `merge_sweep.sql` joins `kosher_brands`. A partial brand count cannot wipe the list:
-  `kosher.sql` refuses to run on fewer than 1,000 counted brands. On day one, the
-  first `brands` count and `kosher.sql` run before the census. An empty list enrols
-  nothing, which fails safe.
+  `merge_sweep.sql` joins `kosher_brands`. Since nothing is ever removed, a partial or
+  failed count can only delay an addition. On day one, the first `brands` count and
+  `kosher.sql` run before the census. An empty list enrols nothing, which fails safe.
 - `brand_exclusions` stays for naming any brand to keep out regardless.
 
 **The hard price floor (2026-10-02): no asking price under 150 kr is ever stored.**
@@ -557,6 +556,6 @@ is what they paid the marketplace, and is stored whatever it is.
 
 Tested in `test.sh`:
 - The merge enrols kosher brands only, skipping a non-kosher brand and an unbranded item.
-- The refresh adds a brand at 20, keeps one at 19, drops one at 17, and treats a brand
-  missing from a full count as having none.
-- The refresh refuses an empty count.
+- The refresh adds brands at 20 and 25 but not at 19.
+- It keeps a kosher brand that dipped to 5, and one missing from the count.
+- A rerun adds nothing.

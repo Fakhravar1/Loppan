@@ -40,10 +40,10 @@ CREATE OR REPLACE TABLE loppan._t_runs                  LIKE loppan.runs;
 CREATE OR REPLACE TABLE loppan._t_model_params          LIKE loppan.model_params;
 CREATE OR REPLACE TABLE loppan._t_brand_rules           LIKE loppan.brand_rules;
 INSERT loppan._t_brand_rules (rule, value) VALUES
-  ('min_price_kr', 150), ('min_listings', 20), ('exit_margin', 0.10);
+  ('min_price_kr', 150), ('min_listings', 20);
 CREATE OR REPLACE TABLE loppan._t_kosher_brands         LIKE loppan.kosher_brands;
-INSERT loppan._t_kosher_brands (brand, listings, kosher, counted_on)
-VALUES ('Acme', 500, TRUE, CURRENT_DATE()), ('Tiny', 3, FALSE, CURRENT_DATE());
+INSERT loppan._t_kosher_brands (brand, listings, kosher_since, counted_on)
+VALUES ('Acme', 500, CURRENT_DATE(), CURRENT_DATE());   -- 'Tiny' has no row: not kosher
 INSERT loppan._t_model_params (rule, value) VALUES
   ('k_level', 20), ('k_season', 30), ('k_sell', 20), ('window_days', 365),
   ('export_max_pct_of_expected', 60), ('export_top_n', 30000);
@@ -194,38 +194,30 @@ table_bytes=$(bq --location=EU query --use_legacy_sql=false --dry_run \
   'select * from loppan._t_items' 2>&1 | grep -oE '[0-9]+ bytes' | head -1 || true)
 echo "  info  merge_sweep dry run reads ${merge_bytes:-?}; the whole items table is ${table_bytes:-?}"
 
-# ── Kosher list refresh: joins at 20, leaves below 18, keeps status between ──
+# ── Kosher list: joins at 20, never leaves ──────────────────────────────────
 sql <<EOF
 CREATE OR REPLACE TABLE loppan._t_brand_counts_staging LIKE loppan.brand_counts_staging;
 CREATE OR REPLACE TABLE loppan._t_kosher_brands LIKE loppan.kosher_brands;
-INSERT loppan._t_kosher_brands (brand, listings, kosher, kosher_since, counted_on) VALUES
-  ('Keep19', 25, TRUE,  '$D1', '$D1'),
-  ('Drop17', 25, TRUE,  '$D1', '$D1'),
-  ('Gone',   40, TRUE,  '$D1', '$D1'),
-  ('Rise20',  5, FALSE, NULL,  '$D1');
-INSERT loppan._t_brand_counts_staging (run_date, brand, listings)
-SELECT '$D3', CONCAT('filler', CAST(i AS STRING)), 1 FROM UNNEST(GENERATE_ARRAY(1, 1000)) AS i
-UNION ALL SELECT '$D3', 'Keep19', 19
-UNION ALL SELECT '$D3', 'Drop17', 17
-UNION ALL SELECT '$D3', 'Rise20', 20
-UNION ALL SELECT '$D3', 'New25',  25
-UNION ALL SELECT '$D3', 'New19',  19;
+INSERT loppan._t_kosher_brands (brand, listings, kosher_since, counted_on)
+VALUES ('Dipped', 25, '$D1', '$D1'), ('Missing', 40, '$D1', '$D1');
+INSERT loppan._t_brand_counts_staging (run_date, brand, listings) VALUES
+  ('$D3', 'Dipped', 5), ('$D3', 'New20', 20), ('$D3', 'New25', 25), ('$D3', 'New19', 19);
 EOF
 run_file kosher.sql "$D3"
+run_file kosher.sql "$D3"   # rerun: no change
 sql <<EOF
-ASSERT (SELECT kosher FROM loppan._t_kosher_brands WHERE brand = 'Keep19') AS '19 is inside the margin: stays kosher';
-ASSERT (SELECT NOT kosher FROM loppan._t_kosher_brands WHERE brand = 'Drop17') AS 'below 18 leaves the list';
-ASSERT (SELECT NOT kosher AND listings = 0 FROM loppan._t_kosher_brands WHERE brand = 'Gone')
-  AS 'absent from a full count means no listings';
-ASSERT (SELECT kosher AND kosher_since = '$D3' FROM loppan._t_kosher_brands WHERE brand = 'Rise20')
-  AS '20 joins the list';
-ASSERT (SELECT kosher FROM loppan._t_kosher_brands WHERE brand = 'New25') AS 'a new brand at 25 joins';
-ASSERT (SELECT NOT kosher FROM loppan._t_kosher_brands WHERE brand = 'New19') AS 'a new brand at 19 does not';
+ASSERT (SELECT COUNT(*) FROM loppan._t_kosher_brands) = 4
+  AS 'Dipped and Missing stay, New20 and New25 join, New19 does not; the rerun added nothing';
+ASSERT (SELECT listings = 5 AND kosher_since = '$D1' FROM loppan._t_kosher_brands WHERE brand = 'Dipped')
+  AS 'a brand that dips to 5 stays kosher, with its count updated and its join date kept';
+ASSERT (SELECT COUNT(*) FROM loppan._t_kosher_brands WHERE brand = 'Missing') = 1
+  AS 'a brand absent from a count is not removed';
+ASSERT (SELECT kosher_since = '$D3' FROM loppan._t_kosher_brands WHERE brand = 'New20')
+  AS 'exactly 20 joins';
+ASSERT (SELECT COUNT(*) FROM loppan._t_kosher_brands WHERE brand = 'New19') = 0
+  AS '19 does not join';
 EOF
-if retarget kosher.sql | "${BQ[@]}" --parameter="run:DATE:2000-01-01" >/dev/null 2>&1; then
-  echo "kosher.sql accepted an empty count" >&2; exit 1
-fi
-pass "kosher: joins at 20, margin holds 19, leaves at 17, absent means gone, refuses a partial count"
+pass "kosher: joins at 20, never leaves, absent is not removed, rerun is a no-op"
 
 # ── Model: a fresh items table with known answers ───────────────────────────
 sql <<'EOF'
