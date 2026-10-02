@@ -153,14 +153,15 @@ NO_STATE = dict.fromkeys(state_of({}))
 
 def sweep_row(run_date: str, item_id: str, source: str, present: bool,
               fetched_at: str, hit: dict | None = None, attributes: bool = True) -> dict:
-    """One sweep_staging row, every column present, in schema order."""
+    """One sweep_staging row, every column present, in schema order (below_floor
+    is appended by an ALTER, so it comes last)."""
     state = state_of(hit) if hit else NO_STATE
     attrs = attributes_of(hit) if (hit and attributes) else NO_ATTRIBUTES
     return {"run_date": run_date, "item_id": item_id, "source": source,
             "present": present, "is_for_sale": state["is_for_sale"],
             "fetched_at": fetched_at, "price_ore": state["price_ore"],
             "old_price_ore": state["old_price_ore"], "favourites": state["favourites"],
-            "last_chance": state["last_chance"], **attrs}
+            "last_chance": state["last_chance"], **attrs, "below_floor": False}
 
 
 # ---------------------------------------------------------------- files

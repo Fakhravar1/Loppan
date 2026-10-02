@@ -2,8 +2,9 @@
 
 schema.sql is the contract between the fetchers and BigQuery. Rather than keep a
 second copy of the column list here, which would drift, this parses the CREATE TABLE
-statements themselves. It understands exactly the subset schema.sql uses: scalar
-types, ARRAY<...>, STRUCT<...>, NOT NULL and OPTIONS (...).
+statements themselves, then the `ALTER TABLE ... ADD COLUMN` statements appended
+below them. It understands exactly the subset schema.sql uses: scalar types,
+ARRAY<...>, STRUCT<...>, NOT NULL and OPTIONS (...).
 
 What a row must look like for `bq load --source_format=NEWLINE_DELIMITED_JSON`, as
 checked here:
@@ -171,24 +172,88 @@ def _parse_column(definition: str) -> Column:
 CONTRACT = ("sweep_staging", "adjudication_staging", "circle_origin_staging", "runs")
 
 
+def _statements(sql: str) -> list[str]:
+    """Split comment-free SQL on the semicolons that end statements. Only quotes are
+    tracked: `<` and `>` are comparisons outside a type, so _split_top would miscount."""
+    parts, cur, quote, i = [], [], None, 0
+    while i < len(sql):
+        ch = sql[i]
+        cur.append(ch)
+        if quote:
+            if ch == "\\" and i + 1 < len(sql):
+                cur.append(sql[i + 1])
+                i += 1
+            elif ch == quote:
+                quote = None
+        elif ch in "\"'`":
+            quote = ch
+        elif ch == ";":
+            parts.append("".join(cur[:-1]).strip())
+            cur = []
+        i += 1
+    parts.append("".join(cur).strip())
+    return [p for p in parts if p]
+
+
+_CREATE = re.compile(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w.]+)\s*\(", re.IGNORECASE)
+_ALTER = re.compile(r"ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?([\w.]+)\s+(.*)",
+                    re.IGNORECASE | re.DOTALL)
+_ADD = re.compile(r"ADD\s+COLUMN\s+(IF\s+NOT\s+EXISTS\s+)?(.*)", re.IGNORECASE | re.DOTALL)
+# Actions that leave every column's name, type and mode as they were.
+_HARMLESS = re.compile(r"(SET\s+OPTIONS\b|SET\s+DEFAULT\s+COLLATE\b|ALTER\s+COLUMN\s+"
+                       r"(?:IF\s+EXISTS\s+)?\w+\s+(?:SET\s+OPTIONS|SET\s+DEFAULT|DROP\s+DEFAULT)\b)",
+                       re.IGNORECASE)
+
+
+def _alter(name: str, actions: str, columns: list[Column]) -> None:
+    """Apply one contract table's ALTER TABLE to its column list, in place.
+
+    ADD COLUMN appends, as BigQuery does. An action that only sets options or a
+    default changes nothing a row must carry. Anything else (DROP, RENAME, SET DATA
+    TYPE, DROP NOT NULL) is raised: guessing would validate rows against the wrong
+    table.
+    """
+    for action in _split_top(actions):
+        add = _ADD.match(action)
+        if add:
+            col = _parse_column(add.group(2))
+            if any(c.name.lower() == col.name.lower() for c in columns):
+                if add.group(1):
+                    continue           # IF NOT EXISTS: already there, a no-op
+                raise ValueError(f"ALTER TABLE {name}: column {col.name} already exists")
+            columns.append(col)
+        elif not _HARMLESS.match(action):
+            raise ValueError(f"ALTER TABLE {name}: '{' '.join(action.split()[:3])} ...' "
+                             f"is not an action this parser knows")
+
+
 def load(path: pathlib.Path = SCHEMA_SQL) -> dict[str, list[Column]]:
     """Table name (without dataset) -> its columns, in declaration order.
 
-    Reads CREATE TABLE statements only. A non-contract table that does not parse is
-    left out rather than raised; a contract table that does not parse is an error.
+    Reads CREATE TABLE statements, then ALTER TABLE statements on the contract
+    tables, in file order. Every other statement (MERGE, UPDATE, an ALTER on another
+    table) is ignored. A non-contract table that does not parse is left out rather
+    than raised; a contract table that does not parse is an error.
     """
-    sql = _strip_comments(path.read_text(encoding="utf-8"))
     tables: dict[str, list[Column]] = {}
-    for m in re.finditer(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w.]+)\s*\(",
-                         sql, re.IGNORECASE):
-        open_at = m.end() - 1
-        body = sql[open_at + 1:_balanced(sql, open_at, "(", ")") - 1]
-        name = m.group(1).split(".")[-1]
-        try:
-            tables[name] = [_parse_column(part) for part in _split_top(body)]
-        except ValueError:
-            if name in CONTRACT:
-                raise
+    for stmt in _statements(_strip_comments(path.read_text(encoding="utf-8"))):
+        m = _CREATE.match(stmt)
+        if m:
+            open_at = m.end() - 1
+            body = stmt[open_at + 1:_balanced(stmt, open_at, "(", ")") - 1]
+            name = m.group(1).split(".")[-1]
+            try:
+                tables[name] = [_parse_column(part) for part in _split_top(body)]
+            except ValueError:
+                if name in CONTRACT:
+                    raise
+            continue
+        m = _ALTER.match(stmt)
+        if m and m.group(1).split(".")[-1] in CONTRACT:
+            name = m.group(1).split(".")[-1]
+            if name not in tables:
+                raise ValueError(f"schema.sql alters {name} before creating it")
+            _alter(name, m.group(2), tables[name])
     missing = [t for t in CONTRACT if t not in tables]
     if missing:
         raise ValueError(f"schema.sql has no CREATE TABLE for {missing}")

@@ -40,8 +40,57 @@ class Schema(unittest.TestCase):
         self.assertEqual(cols["materials"].mode, "REPEATED")
         self.assertEqual(cols["fetched_at"].type, "TIMESTAMP")
         self.assertEqual([c.name for c in s["adjudication_staging"]],
-                         ["run_date", "item_id", "outcome", "final_price_ore", "adjudicated_at"])
+                         ["run_date", "item_id", "outcome", "final_price_ore", "adjudicated_at",
+                          "item_status"])
         self.assertEqual({c.name: c.type for c in s["runs"]}["completeness"], "FLOAT64")
+
+    def test_real_schema_alters_add_their_columns(self):
+        """The ALTERs appended to schema.sql reach validate: each new column is
+        last, nullable, of the declared type."""
+        s = bq_schema.load()
+        for table, name, typ in [("adjudication_staging", "item_status", "STRING"),
+                                 ("circle_origin_staging", "bought_on", "DATE"),
+                                 ("sweep_staging", "below_floor", "BOOL")]:
+            col = s[table][-1]
+            self.assertEqual((col.name, col.type, col.mode), (name, typ, "NULLABLE"), table)
+            self.assertEqual([c.name for c in s[table]].count(name), 1, table)
+        # ALTERs on other tables touch nothing here: items is parsed, but not altered.
+        self.assertNotIn("first_price_ore", [c.name for c in s["items"]])
+
+    def parse(self, extra: str) -> dict:
+        sql = ("CREATE TABLE IF NOT EXISTS loppan.items (item_id STRING NOT NULL);\n" +
+               "".join(f"CREATE TABLE IF NOT EXISTS loppan.{t} (run_date DATE NOT NULL);\n"
+                       for t in bq_schema.CONTRACT) + extra)
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d, "schema.sql")
+            p.write_text(sql, encoding="utf-8")
+            return bq_schema.load(p)
+
+    def test_alter_subset(self):
+        s = self.parse("""
+            ALTER TABLE loppan.runs ADD COLUMN IF NOT EXISTS note STRING
+              OPTIONS (description = "a; b, c > d -- not a comment"),
+              ADD COLUMN tags ARRAY<STRUCT<k STRING, v INT64>>;
+            ALTER TABLE loppan.runs ADD COLUMN IF NOT EXISTS note STRING;  -- no-op
+            ALTER TABLE loppan.runs ALTER COLUMN note SET OPTIONS (description = 'x');
+            ALTER TABLE loppan.runs SET OPTIONS (description = 'y');
+            ALTER TABLE loppan.items ADD COLUMN IF NOT EXISTS weird GEOGRAPHY;
+            ALTER TABLE loppan.items ALTER COLUMN item_id SET OPTIONS (description = 'z');
+            ALTER TABLE loppan.model_params DROP COLUMN value;
+            UPDATE loppan.brand_rules SET note = 'a < b; c' WHERE rule = 'min_price_kr';
+        """)
+        runs = s["runs"]
+        self.assertEqual([c.name for c in runs], ["run_date", "note", "tags"])
+        self.assertEqual((runs[2].mode, [f.name for f in runs[2].fields]), ("REPEATED", ["k", "v"]))
+        self.assertEqual([c.name for c in s["items"]], ["item_id"])
+
+    def test_alter_that_changes_a_contract_column_is_refused(self):
+        for bad in ["ALTER TABLE loppan.runs DROP COLUMN run_date;",
+                    "ALTER TABLE loppan.sweep_staging RENAME COLUMN run_date TO d;",
+                    "ALTER TABLE loppan.runs ADD COLUMN run_date DATE;",
+                    "ALTER TABLE loppan.runs ADD COLUMN x GEOGRAPHY;"]:
+            with self.assertRaises(ValueError, msg=bad):
+                self.parse(bad)
 
     def test_rows_carry_exactly_the_schema_columns_in_order(self):
         s = bq_schema.load()
