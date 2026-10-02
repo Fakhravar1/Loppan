@@ -38,7 +38,7 @@ jobs:
           python3 - <<'EOF'
           import json, os, re, urllib.request
           base = "https://zgqywowejxtokqsybqnu.supabase.co/rest/v1"
-          key = os.environ["LOPPAN_SUPABASE_KEY"].strip()
+          key = os.environ["LOPPAN_SUPABASE_KEY"].strip().lstrip("\ufeff").strip()  # BOM: db._clean
           head = {"apikey": key, "Authorization": f"Bearer {key}", "Prefer": "count=exact"}
           for table in ("circle_origins", "season_clearings"):
               rows, total, page = [], None, 1000
