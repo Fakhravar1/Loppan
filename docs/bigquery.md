@@ -359,8 +359,15 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
 `~/loppan_setup.sh` in that Cloud Shell home directory.
 
 **Phase 1 — Tables**
-- [ ] DDL for `items`, `sweep_staging`, `cost_params`, `seasonal_prior`
-- [ ] Load `seasonal_prior.csv`; fill `cost_params` (open question 3)
+- [ ] `deploy/bigquery/schema.sql`, applied by `bq-schema.yml` on every change.
+      Idempotent: `IF NOT EXISTS` plus a keyed `MERGE`. Tables: `items`,
+      `sweep_staging`, `adjudication_staging`, `circle_origin_staging` (the three
+      staging tables expire after 7 days), `runs` (the completeness gate),
+      `brand_rules` (seeded with the §12 values), `brand_exclusions`, `cost_params`,
+      `seasonal_prior`
+- [ ] `seasonal_prior` loaded from the CSV (`--replace`; the CSV is the source of truth)
+- [ ] Fill `cost_params` (open question 3) and `brand_exclusions` (the unbranded
+      placeholder's exact label, found during Phase 2)
 
 **Phase 2 — Census seed (one-off)**
 - [ ] Fan-out search over brand × category × price band to enrol every live,
