@@ -3,6 +3,8 @@
     python -m unittest discover tests
 """
 
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -29,6 +31,18 @@ HIT = {
                  "material": ["Silke"], "color": ["Grå"], "season": ["Vår", "Höst"],
                  "defects": [{"type": "Fläck"}]},
 }
+
+
+def read_rows(path) -> list[dict]:
+    with open(path, encoding="utf-8") as fh:
+        return [json.loads(line) for line in fh if line.strip()]
+
+
+def prices_under(rows: list[dict], floor_ore: int) -> list[tuple[str, str, int]]:
+    """Every price-like value under the floor, anywhere in any row."""
+    return [(r.get("item_id"), k, v) for r in rows for k, v in r.items()
+            if "price" in k and isinstance(v, int) and not isinstance(v, bool)
+            and v < floor_ore]
 
 
 class Schema(unittest.TestCase):
@@ -168,6 +182,15 @@ class Track(unittest.TestCase):
 
 
 class Floor(unittest.TestCase):
+    def setUp(self):
+        # Never reach the real `bq` CLI from a test: the floor source is the default
+        # unless a test says otherwise.
+        self.real_bq = bq_fetch.floor_from_bq
+        bq_fetch.floor_from_bq = lambda: None
+
+    def tearDown(self):
+        bq_fetch.floor_from_bq = self.real_bq
+
     def test_cli_override_wins_and_default_is_150(self):
         class A:
             min_price_kr = 99.0
@@ -181,16 +204,103 @@ class Floor(unittest.TestCase):
             bq_fetch.floor_from_bq = real
 
     def test_rows_under_the_floor_are_dropped(self):
+        """Census and new: an item under the floor gets no row at all."""
         class FakeCrawl:
             def run(self, on_hits):
                 cheap = dict(HIT, objectID="cheap", price_SE={"amount": 14900})
-                on_hits([HIT, cheap, HIT])
+                unpriced = dict(HIT, objectID="unpriced", price_SE={})
+                # at the floor, but its old price is under it: kept, old price dropped
+                edge = dict(HIT, objectID="edge", price_SE={"amount": 15000},
+                            priceDrop_SE={"oldPrice": {"amount": 14000}})
+                on_hits([HIT, cheap, HIT, unpriced, edge])
                 return {"complete": True}
-        with tempfile.TemporaryDirectory() as d:
-            out = bq_fetch.NDJSON(os.path.join(d, "c.ndjson"))
-            res = bq_fetch.crawl_to_rows(FakeCrawl(), out, "2026-10-02", "census", None, 15000)
-            out.close()
-        self.assertEqual((out.rows, res["below_floor"], res["duplicates"]), (1, 1, 1))
+        for source in ("census", "new"):
+            with tempfile.TemporaryDirectory() as d:
+                path = os.path.join(d, "c.ndjson")
+                out = bq_fetch.NDJSON(path)
+                res = bq_fetch.crawl_to_rows(FakeCrawl(), out, "2026-10-02", source, None, 15000)
+                out.close()
+                rows = read_rows(path)
+            self.assertEqual((out.rows, res["below_floor"], res["duplicates"]), (2, 2, 1))
+            self.assertEqual([r["item_id"] for r in rows], ["abc123", "edge"])
+            self.assertEqual((rows[1]["price_ore"], rows[1]["old_price_ore"]), (15000, None))
+            self.assertEqual([r["below_floor"] for r in rows], [False, False])
+            self.assertEqual(prices_under(rows, 15000), [])
+
+    def run_track_cli(self, answers: dict, *args) -> tuple[list[dict], dict]:
+        """bq_fetch.py track end to end, on a stub index: id -> hit (None = absent)."""
+        def fake(item_ids, workers=8, attributes=None):
+            for i in range(0, len(item_ids), 100):
+                chunk = item_ids[i:i + 100]
+                yield chunk, [answers[x] and dict(answers[x], objectID=x) for x in chunk]
+        real = bq_fetch.algolia.get_objects_parallel
+        bq_fetch.algolia.get_objects_parallel = fake
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                ids, out, summary = (os.path.join(d, n) for n in ("ids.txt", "t.ndjson", "s.json"))
+                pathlib.Path(ids).write_text("\n".join(answers) + "\n", encoding="utf-8")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = bq_fetch.main(["track", "--ids", ids, "--out", out,
+                                          "--summary", summary, *args])
+                self.assertEqual(code, 0)
+                v = bq_schema.validate_file(pathlib.Path(out), "sweep_staging")
+                self.assertTrue(v["ok"], v["errors"])
+                return read_rows(out), json.loads(pathlib.Path(summary).read_text("utf-8"))
+        finally:
+            bq_fetch.algolia.get_objects_parallel = real
+
+    def test_track_flags_a_markdown_under_the_floor_without_its_price(self):
+        state = {"isForSale": True, "lastChance": True, "favouriteCount": 7}
+        rows, summary = self.run_track_cli({
+            "under": dict(state, price_SE={"amount": 14900},
+                          priceDrop_SE={"oldPrice": {"amount": 20000}}),
+            "at": dict(state, price_SE={"amount": 15000},
+                       priceDrop_SE={"oldPrice": {"amount": 14000}}),
+            "over": dict(state, price_SE={"amount": 30000},
+                         priceDrop_SE={"oldPrice": {"amount": 35000}}),
+            "gone": None,
+            "unpriced": dict(state, price_SE={}),
+        }, "--min-price-kr", "150")
+        by_id = {r["item_id"]: r for r in rows}
+        under = by_id["under"]
+        self.assertEqual((under["present"], under["below_floor"], under["price_ore"],
+                          under["old_price_ore"]), (True, True, None, None))
+        self.assertEqual((under["favourites"], under["last_chance"], under["is_for_sale"]),
+                         (7, True, True))
+        self.assertEqual((by_id["at"]["price_ore"], by_id["at"]["old_price_ore"],
+                          by_id["at"]["below_floor"]), (15000, None, False))
+        self.assertEqual((by_id["over"]["price_ore"], by_id["over"]["old_price_ore"],
+                          by_id["over"]["below_floor"]), (30000, 35000, False))
+        self.assertEqual((by_id["gone"]["present"], by_id["gone"]["below_floor"]), (False, False))
+        self.assertEqual((by_id["unpriced"]["price_ore"], by_id["unpriced"]["below_floor"]),
+                         (None, False))
+        self.assertEqual(summary["measured"]["below_floor"], 1)
+        self.assertEqual(summary["min_price_kr"], {"value": 150.0, "source": "--min-price-kr"})
+
+    def test_track_output_holds_no_price_under_15000_ore(self):
+        """Scan the NDJSON itself: every price-like value, on every row."""
+        answers = {f"id{n}": {"isForSale": True, "price_SE": {"amount": 100 * n},
+                              "priceDrop_SE": {"oldPrice": {"amount": 100 * n + 5000}}}
+                   for n in range(0, 400, 7)}
+        rows, summary = self.run_track_cli(answers)        # no bq: the default, 150 kr
+        self.assertEqual(summary["min_price_kr"], {"value": 150.0, "source": "default"})
+        self.assertEqual(len(rows), len(answers))
+        self.assertEqual(prices_under(rows, 15000), [])
+        self.assertEqual(sum(r["below_floor"] for r in rows),
+                         sum(1 for n in range(0, 400, 7) if 100 * n < 15000))
+
+    def test_track_reads_the_floor_where_census_and_new_do(self):
+        answers = {"x": {"isForSale": True, "price_SE": {"amount": 18000}}}
+        real = bq_fetch.floor_from_bq
+        try:
+            bq_fetch.floor_from_bq = lambda: 200.0
+            rows, summary = self.run_track_cli(answers)
+            self.assertEqual(summary["min_price_kr"]["source"], "loppan.brand_rules.min_price_kr")
+            self.assertEqual((rows[0]["below_floor"], rows[0]["price_ore"]), (True, None))
+            rows, summary = self.run_track_cli(answers, "--min-price-kr", "150")
+            self.assertEqual((rows[0]["below_floor"], rows[0]["price_ore"]), (False, 18000))
+        finally:
+            bq_fetch.floor_from_bq = real
 
 
 class NoDatabase(unittest.TestCase):

@@ -35,6 +35,11 @@ from loppan import algolia, bq_brands, bq_schema, bq_shapes, outcomes
 
 RESOLVE_GATE = 0.995      # docs/bigquery.md §3 change 3
 
+# The hard price floor (docs/bigquery.md §12): no price under it is ever written.
+# Read from loppan.brand_rules at run time; this is only the fallback.
+FLOOR_DEFAULT_KR = 150.0
+FLOOR_DEFAULT_ORE = int(FLOOR_DEFAULT_KR * 100)
+
 # Every request here answers in well under a second (p90 0.3 s locally, 1.1 s on
 # Actions), so a dead kept-alive connection should cost 10 s, not 30, before the
 # client's own retry. Same throttle, same workers: this only shortens a stall.
@@ -152,16 +157,28 @@ NO_STATE = dict.fromkeys(state_of({}))
 
 
 def sweep_row(run_date: str, item_id: str, source: str, present: bool,
-              fetched_at: str, hit: dict | None = None, attributes: bool = True) -> dict:
+              fetched_at: str, hit: dict | None = None, attributes: bool = True,
+              floor_ore: int = FLOOR_DEFAULT_ORE) -> dict:
     """One sweep_staging row, every column present, in schema order (below_floor
-    is appended by an ALTER, so it comes last)."""
+    is appended by an ALTER, so it comes last).
+
+    The floor is applied here, so no row can carry a price under it. A current
+    price under the floor sets below_floor and writes neither price; merge_sweep.sql
+    then closes the item. An old price under it alone is dropped, nothing else.
+    Census and new never get this far with a price under the floor: an item under
+    it gets no row at all (crawl_to_rows).
+    """
     state = state_of(hit) if hit else NO_STATE
     attrs = attributes_of(hit) if (hit and attributes) else NO_ATTRIBUTES
+    price, old = state["price_ore"], state["old_price_ore"]
+    below = price is not None and price < floor_ore
+    if below or (old is not None and old < floor_ore):
+        old = None
     return {"run_date": run_date, "item_id": item_id, "source": source,
             "present": present, "is_for_sale": state["is_for_sale"],
-            "fetched_at": fetched_at, "price_ore": state["price_ore"],
-            "old_price_ore": state["old_price_ore"], "favourites": state["favourites"],
-            "last_chance": state["last_chance"], **attrs, "below_floor": False}
+            "fetched_at": fetched_at, "price_ore": None if below else price,
+            "old_price_ore": old, "favourites": state["favourites"],
+            "last_chance": state["last_chance"], **attrs, "below_floor": below}
 
 
 # ---------------------------------------------------------------- files
@@ -232,12 +249,16 @@ def fetch_by_id(ids: list[str], attributes: list[str]):
 
 
 def track(ids: list[str], out: NDJSON, run_date: str, full: bool = False,
-          retries: int = 1, gone: list[str] | None = None) -> dict:
+          retries: int = 1, gone: list[str] | None = None,
+          floor_ore: int = FLOOR_DEFAULT_ORE) -> dict:
     """Fetch known live ids. Returns a `runs` row plus measurements.
 
     present=false only for an id the index answered with null. An id in a chunk
     that never got an answer gets no row at all, so the MERGE leaves it untouched
     and it counts against completeness, never towards missing.
+
+    An id answered with a price under `floor_ore` is present, below_floor=true,
+    with no price (see sweep_row): the floor is hard, so that price is never written.
 
     `gone`, if given, collects the adjudication candidates (§5 step 6): ids that
     came back missing, or present with isForSale false.
@@ -246,7 +267,7 @@ def track(ids: list[str], out: NDJSON, run_date: str, full: bool = False,
     t0 = time.time()
     attrs = HIT_ATTRS if full else STATE_ATTRS
     answered: set[str] = set()       # chunk heads; a 6M-id pass holds ~60k of these
-    fetched = missing = not_for_sale = requests = 0
+    fetched = missing = not_for_sale = below_floor = requests = 0
     todo = ids
     for attempt in range(1 + retries):
         for chunk_ids, results, at in fetch_by_id(todo, attrs):
@@ -264,7 +285,9 @@ def track(ids: list[str], out: NDJSON, run_date: str, full: bool = False,
                     not_for_sale += 1
                     if gone is not None:
                         gone.append(item_id)
-                out.write(sweep_row(run_date, item_id, "track", True, at, got, full))
+                row = sweep_row(run_date, item_id, "track", True, at, got, full, floor_ore)
+                below_floor += row["below_floor"]
+                out.write(row)
         # What was not answered, rebuilt from the chunk heads; asked once more.
         chunks = [todo[i:i + 100] for i in range(0, len(todo), 100)]
         todo = [x for c in chunks if c[0] not in answered for x in c]
@@ -280,19 +303,24 @@ def track(ids: list[str], out: NDJSON, run_date: str, full: bool = False,
            "resolve_allowed": bool(completeness is not None
                                    and completeness >= RESOLVE_GATE),
            "note": (f"track: {len(todo):,} ids unanswered, {not_for_sale:,} present "
-                    f"but not for sale" if ids else "no live ids")}
+                    f"but not for sale, {below_floor:,} below the floor"
+                    if ids else "no live ids")}
     measured = {"requests": requests, "seconds": round(secs, 2),
                 "requests_per_s": round(requests / secs, 1) if secs else None,
                 "s_per_1000_ids": round(secs / len(ids) * 1000, 3) if ids else None,
-                "not_for_sale": not_for_sale, "unanswered": len(todo)}
+                "not_for_sale": not_for_sale, "below_floor": below_floor,
+                "unanswered": len(todo)}
     return {"run": run, "measured": measured}
 
 
 def cmd_track(a) -> int:
     ids = read_ids(a.ids)
+    floor_kr, floor_src = price_floor(a)
     out = NDJSON(a.out)
     gone: list[str] = []
-    res = track(ids, out, a.run_date, full=a.full, retries=a.retries, gone=gone)
+    res = track(ids, out, a.run_date, full=a.full, retries=a.retries, gone=gone,
+                floor_ore=kr_to_ore(floor_kr))
+    res["min_price_kr"] = {"value": floor_kr, "source": floor_src}
     res["output"] = out.close()
     if a.runs_out:
         runs = NDJSON(a.runs_out)
@@ -315,10 +343,10 @@ def read_brands(path: str | None) -> set[str] | None:
 
 
 def crawl_to_rows(crawl: bq_shapes.Crawl, out: NDJSON, run_date: str, source: str,
-                  brands: set[str] | None, floor_ore: int = 0) -> dict:
+                  brands: set[str] | None, floor_ore: int = FLOOR_DEFAULT_ORE) -> dict:
     """Run a crawl, writing one row per distinct live item. With a brand set, items
     of other brands, and unbranded ones, are counted and dropped. The price floor is
-    in the query; anything under it here is counted and dropped as a guard."""
+    in the query; an item under it, or with no price, is counted and gets no row."""
     seen: set[str] = set()
     tally = {"duplicates": 0, "dropped_by_brand": 0, "unbranded": 0, "below_floor": 0}
 
@@ -340,7 +368,7 @@ def crawl_to_rows(crawl: bq_shapes.Crawl, out: NDJSON, run_date: str, source: st
             if brands is not None and brand not in brands:
                 tally["dropped_by_brand"] += 1
                 continue
-            out.write(sweep_row(run_date, item_id, source, True, at, h))
+            out.write(sweep_row(run_date, item_id, source, True, at, h, floor_ore=floor_ore))
 
     report = crawl.run(on_hits)
     report.update(tally, distinct_items=len(seen))
@@ -351,8 +379,11 @@ def since_ms(day: str) -> int:
     return int(dt.datetime.fromisoformat(day).replace(tzinfo=dt.UTC).timestamp() * 1000)
 
 
-FLOOR_DEFAULT_KR = 150.0
 FLOOR_SQL = "select value from loppan.brand_rules where rule = 'min_price_kr'"
+
+
+def kr_to_ore(kr: float) -> int:
+    return int(round(kr * 100))
 
 
 def floor_from_bq() -> float | None:
@@ -373,9 +404,10 @@ def floor_from_bq() -> float | None:
 
 
 def price_floor(a) -> tuple[float, str]:
-    """The enrolment price floor in kr, and where it came from. It applies to
-    census and new only: a tracked item a markdown takes under the floor is still
-    followed to its outcome, as with the §12 brand rule."""
+    """The hard price floor in kr, and where it came from: --min-price-kr, else
+    loppan.brand_rules, else the default. One source for track, census and new.
+    Census and new write no row for an item under it; track flags a tracked item
+    marked down under it as below_floor, without its price (§12)."""
     if a.min_price_kr is not None:
         return a.min_price_kr, "--min-price-kr"
     v = floor_from_bq()
@@ -390,7 +422,7 @@ def search_crawl(a, first_dim: bq_shapes.Dim, source: str) -> int:
     """Shared by census and new: live, in scope, at or above the price floor.
     price_SE.amount is öre (it is pricing.amount x 100, checked 2026-10-02)."""
     floor_kr, floor_src = price_floor(a)
-    floor_ore = int(round(floor_kr * 100))
+    floor_ore = kr_to_ore(floor_kr)
     base = f"isForSale:true AND price_SE.amount>={floor_ore}"
     dims = [first_dim, bq_shapes.Dim("price_SE.amount", floor_ore, 10 ** 9)]
     crawl = bq_shapes.Crawl(base, bq_shapes.scope(a.categories), dims, HIT_ATTRS,
@@ -538,8 +570,14 @@ def main(argv: list[str] | None = None) -> int:
         if out:
             sp.add_argument("--out", required=True, help="NDJSON file to write")
 
+    def floored(sp):
+        sp.add_argument("--min-price-kr", type=float,
+                        help="hard price floor in kr; default: loppan.brand_rules "
+                             f"min_price_kr, else {FLOOR_DEFAULT_KR:g}")
+
     sp = sub.add_parser("track", help="fetch known live ids (sweep_staging, source=track)")
     common(sp)
+    floored(sp)
     sp.add_argument("--ids", required=True, help="file of live ids, one per line")
     sp.add_argument("--runs-out", help="write the runs row (completeness gate) here")
     sp.add_argument("--gone-out", help="write adjudication candidates here")
@@ -557,9 +595,7 @@ def main(argv: list[str] | None = None) -> int:
                                          "other brands and unbranded items are dropped")
         sp.add_argument("--max-leaves", type=int,
                         help="stop after this many leaf shapes (for sample runs)")
-        sp.add_argument("--min-price-kr", type=float,
-                        help="enrolment floor in kr; default: loppan.brand_rules "
-                             f"min_price_kr, else {FLOOR_DEFAULT_KR:g}")
+        floored(sp)
 
     sp = sub.add_parser("census", help="one-off seed of every live item (source=census)")
     common(sp)
