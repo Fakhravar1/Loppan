@@ -56,6 +56,7 @@ class Crawl:
         self.base, self.ff, self.dims, self.attrs = base, facet_filters, dims, attrs
         self.max_leaves = max_leaves
         self.requests = 0
+        self.latencies: list[float] = []     # seconds per request, throttle wait included
         self.nodes: dict[int, list] = {}     # id -> [parent, count, exhaustive, leaf_sum]
         self.problems: list[dict] = []
 
@@ -68,8 +69,20 @@ class Crawl:
 
     def _search(self, bounds, **kw) -> dict:
         self.requests += 1    # GIL-atomic enough for a tally
-        return algolia.search(filters=self._filter(bounds), facet_filters=self.ff,
-                              **QUIET, **kw)
+        t = time.time()
+        try:
+            return algolia.search(filters=self._filter(bounds), facet_filters=self.ff,
+                                  **QUIET, **kw)
+        finally:
+            if len(self.latencies) < 100_000:
+                self.latencies.append(time.time() - t)
+
+    def latency(self) -> dict:
+        s = sorted(self.latencies)
+        if not s:
+            return {}
+        return {"p50_s": round(s[len(s) // 2], 3), "p90_s": round(s[int(len(s) * 0.9)], 3),
+                "max_s": round(s[-1], 3)}
 
     def _fetch(self, bounds) -> dict:
         return self._search(bounds, hits_per_page=LEAF, attributesToRetrieve=self.attrs)
@@ -160,7 +173,7 @@ class Crawl:
         return {"shapes": len(self.nodes), "leaves": leaves, "hits_read": hits_read,
                 "requests": self.requests, "seconds": round(secs, 2),
                 "requests_per_s": round(self.requests / secs, 1) if secs else None,
-                "failed_shapes": failed, "truncated": truncated,
+                "latency": self.latency(), "failed_shapes": failed, "truncated": truncated,
                 "complete": not truncated and not failed and not self.problems,
                 "subtree_checks": self._checks(truncated or failed),
                 "problems": self.problems[:50]}

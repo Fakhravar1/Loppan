@@ -49,6 +49,11 @@ jobs:
           python3 loppan/bq_fetch.py census --categories "Man > Skor > Vardagsskor"
           --out census.ndjson --summary census.json
 
+      - name: Fetch what was listed since yesterday in the same category
+        run: >
+          python3 loppan/bq_fetch.py new --since "$(date -u -d yesterday +%F)"
+          --categories "Man > Skor > Vardagsskor" --out new.ndjson
+
       - name: Track 200 of those ids, plus two that do not exist
         run: |
           python3 -c "import json; ids=[json.loads(l)['item_id'] for l in open('census.ndjson')][:200]; open('ids.txt','w').write('\n'.join(ids + ['notAnId0001', 'notAnId0002']) + '\n')"
@@ -57,6 +62,7 @@ jobs:
       - name: Validate against schema.sql
         run: |
           python3 loppan/bq_fetch.py validate census.ndjson --table sweep_staging
+          python3 loppan/bq_fetch.py validate new.ndjson --table sweep_staging
           python3 loppan/bq_fetch.py validate track.ndjson --table sweep_staging
           python3 loppan/bq_fetch.py validate runs.ndjson --table runs
 
@@ -66,6 +72,8 @@ jobs:
             'create or replace table loppan._sample_staging like loppan.sweep_staging'
           bq --location=EU load --source_format=NEWLINE_DELIMITED_JSON \
             loppan._sample_staging census.ndjson
+          bq --location=EU load --source_format=NEWLINE_DELIMITED_JSON \
+            loppan._sample_staging new.ndjson
           bq --location=EU load --source_format=NEWLINE_DELIMITED_JSON \
             loppan._sample_staging track.ndjson
           bq --location=EU query --use_legacy_sql=false --format=pretty \
