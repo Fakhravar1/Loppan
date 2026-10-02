@@ -40,7 +40,7 @@ concurrency:
 
 env:
   PUSH_MODE: origins  # the mode a push to bigquery-daily runs
-  PUSH_ORIGINS_MAX: "6000"   # ~3.3 h of serial Parse calls, inside the 330 min limit
+  PUSH_ORIGINS_MAX: "6000"   # ~3.3 h of serial Parse calls, inside the 330 min limit (2nd batch)
 
 jobs:
   run:
