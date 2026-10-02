@@ -5,6 +5,7 @@ name: bq-fetch-sample
 # sweep_staging, count, drop. Nothing is written to a real table.
 #
 # Runs on push only when this file changes. No schedule, no manual trigger.
+# Each crawl summary reports request latency (p50, p90, max).
 # Auth is Workload Identity Federation as loppan-pipeline (docs/bigquery.md §9).
 
 on:

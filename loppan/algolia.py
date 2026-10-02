@@ -85,6 +85,11 @@ _throttle_lock = threading.Lock()
 TRANSIENT = (OSError, http.client.HTTPException)
 RETRIES = 4
 BACKOFF_S = 3
+# Socket timeout per request. A kept-alive connection that has silently died costs
+# exactly this long before the retry above takes over: measured from GitHub's
+# runners 2026-10-02, one search request in ~27 stalled for 30.5 s. Read at connect
+# time, so a caller can lower it for its own process.
+TIMEOUT_S = 30
 
 _last_call = 0.0
 
@@ -118,7 +123,7 @@ def _connection() -> tuple[http.client.HTTPSConnection, bool]:
     conn = getattr(_conn_local, "conn", None)
     if conn is not None:
         return conn, False
-    conn = http.client.HTTPSConnection(HOST, timeout=30)
+    conn = http.client.HTTPSConnection(HOST, timeout=TIMEOUT_S)
     _conn_local.conn = conn
     return conn, True
 

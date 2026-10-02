@@ -34,6 +34,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from loppan import algolia, bq_brands, bq_schema, bq_shapes, outcomes
 
 RESOLVE_GATE = 0.995      # docs/bigquery.md §3 change 3
+
+# Every request here answers in well under a second (p90 0.3 s locally, 1.1 s on
+# Actions), so a dead kept-alive connection should cost 10 s, not 30, before the
+# client's own retry. Same throttle, same workers: this only shortens a stall.
+algolia.TIMEOUT_S = 10
 SEASON_BITS = {"Vår": 1, "Sommar": 2, "Höst": 4, "Vinter": 8}
 
 # What a track row needs. Everything else stays on the server.
