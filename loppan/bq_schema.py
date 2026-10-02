@@ -169,7 +169,8 @@ def _parse_column(definition: str) -> Column:
 # The tables the fetchers write. Only these must parse; anything else in schema.sql
 # (items, parameter tables, later ALTERs) is the MERGE's business, not the loader's,
 # and a type this parser does not know there must not break validation here.
-CONTRACT = ("sweep_staging", "adjudication_staging", "circle_origin_staging", "runs")
+CONTRACT = ("sweep_staging", "adjudication_staging", "circle_origin_staging", "runs",
+            "brand_counts_staging")
 
 
 def _statements(sql: str) -> list[str]:

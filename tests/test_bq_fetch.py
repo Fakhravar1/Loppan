@@ -380,6 +380,84 @@ class Parse(unittest.TestCase):
         self.assertEqual(list(rows[0])[-1], "bought_on")
 
 
+class FakeIndex:
+    """A stub search index for brand counting. Facet counts are exact only up to
+    `exact_up_to` hits (an estimate, inflated, above it) and the facet list stops at
+    bq_brands.FACET_MAX values, as the real index does."""
+
+    def __init__(self, items, exact_up_to):
+        self.items, self.exact_up_to, self.calls = items, exact_up_to, 0
+
+    def search(self, filters="", facet_filters=None, hits_per_page=100, **kw):
+        import re
+        self.calls += 1
+        hits = self.items
+        for attr, op, v in re.findall(r"([\w.]+)(>=|<)(\d+)", filters):
+            key = {"createdAt": "c", "price_SE.amount": "p"}[attr]
+            hits = [h for h in hits if (h[key] >= int(v) if op == ">=" else h[key] < int(v))]
+        exact = len(hits) <= self.exact_up_to
+        counts = {}
+        for h in hits:
+            if h["b"]:
+                counts[h["b"]] = counts.get(h["b"], 0) + (1 if exact else 2)
+        top = dict(sorted(counts.items(), key=lambda kv: -kv[1])[:bq_fetch.bq_brands.FACET_MAX])
+        return {"nbHits": len(hits), "exhaustiveNbHits": True, "hits": [],
+                "exhaustive": {"nbHits": True, "facetsCount": exact},
+                "facets": {"metadata.brand": top}}
+
+
+class Brands(unittest.TestCase):
+    def setUp(self):
+        self.real = (bq_fetch.bq_shapes.algolia.search, bq_fetch.bq_brands.FACET_MAX,
+                     bq_fetch.floor_from_bq)
+        bq_fetch.floor_from_bq = lambda: None
+        bq_fetch.bq_brands.FACET_MAX = 10
+
+    def tearDown(self):
+        (bq_fetch.bq_shapes.algolia.search, bq_fetch.bq_brands.FACET_MAX,
+         bq_fetch.floor_from_bq) = self.real
+
+    def test_counts_are_exact_at_or_over_the_floor(self):
+        # 60 brands of falling size, one unbranded item in 7, prices either side of 150 kr
+        items = [{"c": 1_700_000_000 + 37 * n, "p": 10000 if n % 5 == 0 else 20000,
+                  "b": None if n % 7 == 0 else f"B{n % 60 if n % 3 else n % 4:02d}"}
+                 for n in range(3000)]
+        truth = {}
+        for h in items:
+            if h["b"] and h["p"] >= 15000:
+                truth[h["b"]] = truth.get(h["b"], 0) + 1
+        index = FakeIndex(items, exact_up_to=200)
+        bq_fetch.bq_shapes.algolia.search = index.search
+        with tempfile.TemporaryDirectory() as d:
+            out, summary = os.path.join(d, "b.ndjson"), os.path.join(d, "s.json")
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = bq_fetch.main(["brands", "--out", out, "--summary", summary,
+                                      "--run-date", "2026-10-02"])
+            self.assertEqual(code, 0)
+            v = bq_schema.validate_file(pathlib.Path(out), "brand_counts_staging")
+            self.assertTrue(v["ok"], v["errors"])
+            rows = read_rows(out)
+            s = json.loads(pathlib.Path(summary).read_text("utf-8"))
+        self.assertEqual({r["brand"]: r["listings"] for r in rows}, truth)
+        self.assertEqual({r["run_date"] for r in rows}, {"2026-10-02"})
+        self.assertEqual(s["listings_total"], sum(truth.values()))
+        self.assertGreater(len(truth), bq_fetch.bq_brands.FACET_MAX)   # truncation mattered
+        self.assertEqual(s["min_price_kr"]["value"], 150.0)
+
+    def test_a_shape_that_cannot_be_counted_exactly_fails(self):
+        # every item in the same second: no split helps, so the count is not exact
+        items = [{"c": 1_700_000_000, "p": 20000, "b": f"B{n % 30}"} for n in range(500)]
+        bq_fetch.bq_shapes.algolia.search = FakeIndex(items, exact_up_to=100).search
+        with tempfile.TemporaryDirectory() as d:
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = bq_fetch.main(["brands", "--out", os.path.join(d, "b.ndjson")])
+        self.assertEqual(code, 2)
+
+    def test_unnamed_brand_gets_no_row(self):
+        rows = bq_fetch.brand_rows({"A": 3, "": 9, None: 4, "B": 30}, "2026-10-02")
+        self.assertEqual([r["brand"] for r in rows], ["B", "A"])
+
+
 def utc(*args) -> dt.datetime:
     return dt.datetime(*args, tzinfo=dt.UTC)
 

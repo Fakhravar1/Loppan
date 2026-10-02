@@ -398,7 +398,9 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
       Actions three times, all green
 - [x] Kosher list in SQL: `kosher_brands`, `brand_counts_staging`, `kosher.sql`, and
       `merge_sweep.sql` enrolling only kosher brands. Tested
-- [ ] `bq_fetch.py brands` counting at ≥ 150 kr and writing `brand_counts_staging` NDJSON
+- [x] `bq_fetch.py brands` counting at ≥ 150 kr and writing `brand_counts_staging` NDJSON.
+      A shape is a leaf only when its counts are exhaustive *and* its brand facet list
+      is under 1,000 values, so no brand is cut off; exit 2 if any shape falls short
 - [x] Fetcher dates in Stockholm time (`first_offered`, `run_date`, `new --since`),
       plus `item_status`, `bought_on` and the `below_floor` flag. Branch
       `bigquery-fetch` at a5d042c, 21 tests, Actions sample load green

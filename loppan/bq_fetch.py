@@ -8,7 +8,7 @@ done here: rows go to a file, and a workflow loads the file with `bq load`.
     python loppan/bq_fetch.py new --since 2026-10-01 --out new.ndjson
     python loppan/bq_fetch.py adjudicate --ids gone.txt --out adj.ndjson
     python loppan/bq_fetch.py origins --ids p2p.txt --out origins.ndjson
-    python loppan/bq_fetch.py brands --out brands.json
+    python loppan/bq_fetch.py brands --out brands.ndjson
     python loppan/bq_fetch.py census --out census.ndjson
     python loppan/bq_fetch.py validate track.ndjson --table sweep_staging
 
@@ -591,15 +591,30 @@ def cmd_origins(a) -> int:
 # ---------------------------------------------------------------- brands
 
 
+def brand_rows(counts: dict, run_date: str) -> list[dict]:
+    """brand_counts_staging rows, largest first. A brand with no name is not a
+    brand (unbranded items have no key at all), so it never gets a row."""
+    return [{"run_date": run_date, "brand": b, "listings": int(n)}
+            for b, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            if isinstance(b, str) and b]
+
+
 def cmd_brands(a) -> int:
-    """§12 inputs as one JSON document; there is no staging table for them."""
-    res = bq_brands.run(bq_shapes.scope(a.categories), a.median_top)
-    res["generated_at"] = utc_now()
-    res["scope"] = a.categories
-    pathlib.Path(a.out).write_text(json.dumps(res, ensure_ascii=False, indent=1) + "\n",
-                                   encoding="utf-8")
+    """§12 input: brand_counts_staging NDJSON, the exact count of live listings at
+    or above the price floor per brand, in scope. Exit 2 if any shape could not be
+    counted exactly, so a partial count is never loaded as if it were whole."""
+    floor_kr, floor_src = price_floor(a)
+    base = f"isForSale:true AND price_SE.amount>={kr_to_ore(floor_kr)}"
+    res = bq_brands.run(bq_shapes.scope(a.categories), a.median_top, base)
+    out = NDJSON(a.out)
+    for row in brand_rows(res.pop("counts"), a.run_date):
+        out.write(row)
     summary = {k: v for k, v in res.items() if k != "brands"}
-    summary["top_10"] = res["brands"][:10]
+    summary.update(output=out.close(), scope=a.categories, generated_at=utc_now(),
+                   min_price_kr={"value": floor_kr, "source": floor_src},
+                   listings_total=sum(r["live_listings"] for r in res["brands"]),
+                   at_or_over_20=sum(r["live_listings"] >= 20 for r in res["brands"]),
+                   top_10=res["brands"][:10])
     emit_summary(summary, a.summary)
     return 0 if res["partition"]["complete"] else 2
 
@@ -676,12 +691,14 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--ids", required=True, help="Circle (p2p) item ids, one per line")
     sp.set_defaults(fn=cmd_origins)
 
-    sp = sub.add_parser("brands", help="§12 inputs: live listings and median ask per brand")
-    sp.add_argument("--out", required=True, help="JSON file to write")
-    sp.add_argument("--summary")
+    sp = sub.add_parser("brands", help="exact live listings per brand at or above the "
+                                       "floor (brand_counts_staging)")
+    common(sp)
+    floored(sp)
     sp.add_argument("--categories", nargs="+", default=algolia.WEARABLE)
-    sp.add_argument("--median-top", type=int, default=1000,
-                    help="median ask for the top N brands by listings (one request each)")
+    sp.add_argument("--median-top", type=int, default=0,
+                    help="also put the median ask of the top N brands in the summary "
+                         "(one request each)")
     sp.set_defaults(fn=cmd_brands)
 
     sp = sub.add_parser("validate", help="check an NDJSON file against schema.sql")
