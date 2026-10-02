@@ -1,0 +1,48 @@
+name: bq-smoke
+
+# Proves the GitHub → BigQuery path end to end, with no key anywhere.
+#
+# GitHub mints an OIDC token for this run; the `github` Workload Identity pool accepts
+# it only when `repository == Fakhravar1/Loppan`; the token is exchanged for
+# `loppan-pipeline`, which can run jobs in the project and write to the `loppan`
+# dataset and nothing else. Setup and identifiers: docs/bigquery.md §9, Phase 0.
+#
+# Runs on push only when this file changes, because a workflow_dispatch workflow
+# cannot be dispatched until it exists on the default branch.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/bq-smoke.yml
+
+permissions:
+  contents: read
+  id-token: write   # the OIDC token Workload Identity Federation exchanges
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      # session_user() should print the service account, not a person.
+      - name: Read — a query job runs as the service account
+        run: >
+          bq --location=EU query --use_legacy_sql=false --format=pretty
+          'select 1 as ok, session_user() as running_as'
+
+      # Data Editor is granted on the dataset only, so this is the grant under test.
+      - name: Write — the dataset grant holds
+        run: |
+          bq --location=EU query --use_legacy_sql=false \
+            'create or replace table loppan._smoke as select current_timestamp() as created_at'
+          bq show --format=prettyjson loppan._smoke | grep -E '"(numRows|location)"'
+          bq rm -f -t loppan._smoke
