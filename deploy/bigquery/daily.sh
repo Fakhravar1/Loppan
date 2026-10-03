@@ -6,6 +6,10 @@
 #   daily.sh daily     the daily sweep: track every live id, find new listings, merge,
 #                      adjudicate what vanished, Circle origins, resolve, model
 #   daily.sh origins   work through the Circle-origin backlog (up to ORIGINS_MAX)
+#   daily.sh export    re-export the current shortlist_candidates to Supabase
+#
+# daily ends by exporting the shortlist to Supabase (§7), which needs
+# LOPPAN_SUPABASE_KEY. Everything before it is BigQuery-only.
 #
 # Brand counts and the kosher list refresh on census, on Mondays, and whenever the
 # list is empty. Every SQL file is idempotent, so rerunning a day is safe: staging
@@ -97,6 +101,14 @@ origins() {   # Circle purchase prices for live p2p items that lack one, newest 
   echo "  origins asked: $(wc -l < "$OUT/origin_ids.txt")"
 }
 
+export_shortlist() {   # one query for every candidate, then Supabase (§7)
+  step "export shortlist to Supabase"
+  bqout --format=json --max_rows=1000000 'select * from loppan.shortlist_candidates' \
+    > "$OUT/candidates.json"
+  python loppan/bq_export.py --candidates "$OUT/candidates.json" --summary "$OUT/export.json"
+  done_
+}
+
 case "$MODE" in
 census)
   step "census: every live kosher item at or above the floor"
@@ -172,6 +184,12 @@ PY
   echo "  live: $(scalar 'select count(*) from loppan.items where resolved_on is null')"
   echo "  candidates: $(scalar 'select count(*) from loppan.shortlist_candidates')"
   done_
+
+  export_shortlist
+  ;;
+
+export)
+  export_shortlist
   ;;
 
 origins)
