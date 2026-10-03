@@ -14,6 +14,9 @@ Three steps:
   3. promote_shortlist() swaps them into shortlist in one transaction. It refuses an
      empty swap, so a failed export never blanks the dashboard.
 
+Every row carries `signal` ('now' or 'season', model.sql), which the dashboard
+filters on.
+
 Standard library only. Needs LOPPAN_SUPABASE_KEY (the service-role key).
 """
 
@@ -34,7 +37,7 @@ INT = ("weight_g", "price_ore", "n_sales", "expected_now_ore", "expected_peak_or
 FLOAT = ("sell_through", "pct_of_expected")
 BOOL = ("p2p", "history_complete")
 TEXT = ("item_id", "brand", "category", "item_type", "size_code", "condition",
-        "demography", "as_of")
+        "demography", "signal", "as_of")
 
 
 def _typed(raw: dict) -> dict:
