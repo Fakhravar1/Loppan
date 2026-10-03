@@ -1,8 +1,10 @@
 name: bq-daily
 
 # Loppan's daily sweep into BigQuery: deploy/bigquery/daily.sh (docs/bigquery.md §5).
-#   schedule           daily mode, 02:00 UTC (04:00 Stockholm summer time). Fires only
-#                      from the default branch.
+#   schedule           daily mode, 02:23 UTC (04:23 Stockholm summer time). Fires only
+#                      from the default branch. Deliberately off the hour: GitHub drops
+#                      or delays top-of-hour schedules under load, and the 02:00 slot
+#                      never fired on 2026-10-03.
 #   workflow_dispatch  any mode: daily | census (the one-off backfill) | export | origins (the
 #                      Circle-origin backlog, in chunks)
 #   push               only on the bigquery-daily branch, when this file or daily.sh
@@ -13,7 +15,7 @@ name: bq-daily
 
 on:
   schedule:
-    - cron: "0 2 * * *"
+    - cron: "23 2 * * *"
   workflow_dispatch:
     inputs:
       mode:
