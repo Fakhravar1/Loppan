@@ -240,7 +240,8 @@ SELECT CONCAT('Qf', CAST(i AS STRING)), 'Q', 'D', 0, 'below_floor', DATE '2026-0
 FROM UNNEST(GENERATE_ARRAY(1, 2)) AS i
 UNION ALL SELECT 'L1', 'A', 'C', 0,  NULL, NULL, NULL,  15000, FALSE
 UNION ALL SELECT 'L2', 'A', 'C', 0,  NULL, NULL, NULL, 150000, FALSE
-UNION ALL SELECT 'L3', 'B', 'C', 12, NULL, NULL, NULL,  18000, FALSE;
+UNION ALL SELECT 'L3', 'B', 'C', 12, NULL, NULL, NULL,  18000, FALSE
+UNION ALL SELECT 'L5', 'B', 'C', 12, NULL, NULL, NULL,  40000, FALSE;
 EOF
 run_file model.sql 2026-10-02
 sql <<'EOF'
@@ -272,7 +273,26 @@ ASSERT (SELECT peak_month FROM loppan._t_shortlist_candidates WHERE item_id = 'L
   AS 'a cold item peaks in the cold prior peak month';
 ASSERT (SELECT LOGICAL_AND(expected_profit_ore IS NULL) FROM loppan._t_shortlist_candidates)
   AS 'profit stays NULL without cost_params';
+ASSERT (SELECT signal FROM loppan._t_shortlist_candidates WHERE item_id = 'L1') = 'now'
+  AS 'L1 is cheap now: 15000 / 54000 = 28% of expected';
+ASSERT (SELECT signal FROM loppan._t_shortlist_candidates WHERE item_id = 'L3') = 'now'
+  AS 'L3 is cheap now: 18000 / (60000 x cold October ~0.83) = 36%';
+ASSERT (SELECT signal FROM loppan._t_shortlist_candidates WHERE item_id = 'L5') = 'season'
+  AS 'L5 is ~80% of expected now, in only as a seasonal bet';
+ASSERT (SELECT LOGICAL_AND((signal = 'now') = (pct_of_expected <= 60))
+        FROM loppan._t_shortlist_candidates)
+  AS 'signal is now exactly when the price is at most 60% of expected now';
+ASSERT (SELECT gross_margin_ore FROM loppan._t_shortlist_candidates WHERE item_id = 'L5')
+     > (SELECT gross_margin_ore FROM loppan._t_shortlist_candidates WHERE item_id = 'L1')
+  AS 'fixture: the season item L5 out-earns the now item L1, so the cap test means something';
+UPDATE loppan._t_model_params SET value = 2 WHERE rule = 'export_top_n';
 EOF
-pass "model: prior reproduced, pooling, sell-through, margin, exclusion, seasonal peak"
+run_file model.sql 2026-10-02
+sql <<'EOF'
+ASSERT (SELECT STRING_AGG(item_id ORDER BY item_id) FROM loppan._t_shortlist_candidates) = 'L1,L3'
+  AS 'top 2: both now items survive the cap, the higher-margin season item L5 does not';
+UPDATE loppan._t_model_params SET value = 30000 WHERE rule = 'export_top_n';
+EOF
+pass "model: prior reproduced, pooling, sell-through, margin, exclusion, seasonal peak, signal, now-first cap"
 
 echo "all checks passed"

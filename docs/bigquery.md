@@ -329,7 +329,29 @@ thousands and the prior has effectively no weight.
 for those ids only. An id the search index no longer returns has sold since the
 morning's run and is dropped. Then it stages in batches of 500 and calls the swap.
 It needs the `LOPPAN_SUPABASE_KEY` repository secret, which `bq-daily.yml` passes in.
+`daily.sh export` rebuilds the model (`model.sql`) first, so a dispatch of
+`mode=export` re-exports a fresh shortlist, not yesterday's.
 `size_area` (`schema.md`) is not rebuilt yet.
+
+**Signal and first picture (2026-10-03).** Supabase migration `shortlist_signal`
+(additive only):
+- **`signal`** (`model.sql`, carried by `bq_export.py`) says why a row is on the list:
+  - **`'now'`**: price ≤ `export_max_pct_of_expected` (60%) × `expected_now`. It is
+    cheap right now for its brand × category: the bargain-now signal (§6).
+  - **`'season'`**: only the seasonal bet qualifies it. It is too dear for today, but
+    `sell_through × expected_peak` is above the price.
+- **The cap ranks `'now'` first.** The `export_top_n` cap keeps every `'now'` row
+  first, by gross margin, then `'season'` rows by gross margin. A high-margin seasonal
+  bet never crowds out a bargain. `test.sh` proves it with `top_n = 2`.
+- **`first_image_path`** is generated from `image_paths[1]`, stored in `shortlist`,
+  so a card reads a single column. Prepend the image host in the app; the repo stores
+  paths only.
+- **An index on `(signal, pct_of_expected)`** serves the dashboard's default view:
+  `signal = 'now'`, cheapest relative to expected first.
+- `promote_shortlist()` copies `signal` and keeps its empty-swap refusal,
+  `search_path = ''` and service-role-only execute.
+- **Refreshed daily only.** An item that sells during the day stays on the list until
+  the next morning's export. That was decided, rather than an hourly liveness check.
 
 ---
 

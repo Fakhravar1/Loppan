@@ -6,7 +6,8 @@
 #   daily.sh daily     the daily sweep: track every live id, find new listings, merge,
 #                      adjudicate what vanished, Circle origins, resolve, model
 #   daily.sh origins   work through the Circle-origin backlog (up to ORIGINS_MAX)
-#   daily.sh export    re-export the current shortlist_candidates to Supabase
+#   daily.sh export    rebuild the model (model.sql) from the current items, then
+#                      re-export shortlist_candidates to Supabase
 #
 # daily ends by exporting the shortlist to Supabase (§7), which needs
 # LOPPAN_SUPABASE_KEY. Everything before it is BigQuery-only.
@@ -18,7 +19,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-MODE=${1:?usage: daily.sh census|daily|origins}
+MODE=${1:?usage: daily.sh census|daily|origins|export}
 RUN=${RUN_DATE:-$(TZ=Europe/Stockholm date +%F)}
 OUT=${OUT_DIR:-$(mktemp -d)}
 ORIGINS_MAX=${ORIGINS_MAX:-1500}      # Parse is serial at ~2 s an item: ~50 min
@@ -189,6 +190,11 @@ PY
   ;;
 
 export)
+  step "model"
+  sqlfile model.sql
+  echo "  candidates: $(scalar 'select count(*) from loppan.shortlist_candidates')"
+  done_
+
   export_shortlist
   ;;
 

@@ -8,7 +8,8 @@
 --   price_level           brand x category (and brand NULL = the category itself):
 --                         deseasonalised median sold price, pooled toward the category
 --   sell_through          brand x category (and brand NULL): sold / (sold + expired), pooled
---   shortlist_candidates  live items under the loosest threshold, ranked by gross margin
+--   shortlist_candidates  live items under the loosest threshold, with their signal
+--                         ('now' or 'season'), 'now' ranked first, then by gross margin
 
 DECLARE k_level  FLOAT64 DEFAULT (SELECT value FROM loppan.model_params WHERE rule = 'k_level');
 DECLARE k_season FLOAT64 DEFAULT (SELECT value FROM loppan.model_params WHERE rule = 'k_season');
@@ -119,6 +120,9 @@ FROM c;
 -- group over the next 12 months and joined, never expanded per item.
 -- expected_profit_ore stays NULL until cost_params is filled: the README's rule is that
 -- profit is never faked. gross_margin_ore is before fees and shipping.
+-- signal: 'now' when the item is cheap right now for its brand x category (price at most
+-- max_pct of expected_now); 'season' when only the seasonal bet qualifies it. The top_n
+-- cap keeps every 'now' first, by gross margin, then 'season' by gross margin.
 
 CREATE OR REPLACE TABLE loppan.shortlist_candidates AS
 WITH months AS (
@@ -167,8 +171,11 @@ SELECT item_id, brand, category, item_type, size_code, condition, demography, p2
        ROUND(100 * price_ore / expected_now, 1) AS pct_of_expected,
        CAST(ROUND(sell_through * expected_peak - price_ore) AS INT64) AS gross_margin_ore,
        CAST(NULL AS INT64) AS expected_profit_ore,
+       IF(price_ore <= max_pct / 100 * expected_now, 'now', 'season') AS signal,
        @run AS as_of
 FROM scored
 WHERE price_ore <= max_pct / 100 * expected_now
    OR sell_through * expected_peak > price_ore
-QUALIFY ROW_NUMBER() OVER (ORDER BY sell_through * expected_peak - price_ore DESC) <= top_n;
+QUALIFY ROW_NUMBER() OVER (
+  ORDER BY IF(price_ore <= max_pct / 100 * expected_now, 0, 1),
+           sell_through * expected_peak - price_ore DESC) <= top_n;

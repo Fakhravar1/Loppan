@@ -24,6 +24,16 @@ class Typing(unittest.TestCase):
         self.assertEqual(row["peak_month"], 1)
         self.assertIsNone(row["expected_profit_ore"])
 
+    def test_signal_is_carried(self):
+        self.assertEqual(bq_export._typed({"item_id": "a", "signal": "now"})["signal"], "now")
+        self.assertEqual(bq_export._typed({"item_id": "a", "signal": "season"})["signal"],
+                         "season")
+
+    def test_signal_missing_is_none_not_dropped(self):
+        row = bq_export._typed({"item_id": "a"})
+        self.assertIn("signal", row)
+        self.assertIsNone(row["signal"])
+
     def test_native_json_types_also_work(self):
         row = bq_export._typed({"item_id": "a", "price_ore": 15000, "p2p": True})
         self.assertEqual(row["price_ore"], 15000)
@@ -32,8 +42,10 @@ class Typing(unittest.TestCase):
 
 class Export(unittest.TestCase):
     def test_sold_items_dropped_and_swap_called(self):
-        cands = [{"item_id": "live", "price_ore": "20000", "as_of": "2026-10-03"},
-                 {"item_id": "sold", "price_ore": "30000", "as_of": "2026-10-03"}]
+        cands = [{"item_id": "live", "price_ore": "20000", "signal": "season",
+                  "as_of": "2026-10-03"},
+                 {"item_id": "sold", "price_ore": "30000", "signal": "now",
+                  "as_of": "2026-10-03"}]
         with tempfile.TemporaryDirectory() as d:
             path = pathlib.Path(d, "c.json")
             path.write_text(json.dumps(cands), encoding="utf-8")
@@ -46,6 +58,7 @@ class Export(unittest.TestCase):
         staged = upsert.call_args.args[1]
         self.assertEqual([r["item_id"] for r in staged], ["live"])
         self.assertEqual(staged[0]["image_paths"], ["a/1.jpg"])
+        self.assertEqual(staged[0]["signal"], "season")
         self.assertEqual([c.args[0] for c in rpc.call_args_list],
                          ["clear_shortlist_staging", "promote_shortlist"])
 
