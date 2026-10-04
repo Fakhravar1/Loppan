@@ -9,8 +9,8 @@
 #   daily.sh export    rebuild the model (model.sql) from the current items, then
 #                      re-export shortlist_candidates to Supabase
 #
-# daily ends by exporting the shortlist to Supabase (§7), which needs
-# LOPPAN_SUPABASE_KEY. Everything before it is BigQuery-only.
+# daily exports the shortlist to Supabase (§7), which needs LOPPAN_SUPABASE_KEY;
+# everything else is BigQuery-only. It ends with progress.sql and the PROGRESS block.
 #
 # Brand counts and the kosher list refresh on census, on Mondays, and whenever the
 # list is empty. Every SQL file is idempotent, so rerunning a day is safe: staging
@@ -110,6 +110,20 @@ export_shortlist() {   # one query for every candidate, then Supabase (§7)
   done_
 }
 
+# The day's progress row (progress.sql), then the PROGRESS block: plain lines between
+# fixed markers, outside any ::group:: so the log shows it open, and so a morning check
+# can cut it out of `gh run view --log` (docs/bigquery.md §5, step 10). A report, not a
+# pipeline step: a failure here warns and never fails a run whose data is already in.
+progress() {
+  step "progress"
+  sqlfile progress.sql || echo "::warning::progress.sql failed: no progress row for $RUN"
+  done_
+  { bqout --format=json "select * except (computed_at) from loppan.progress_daily
+           where run_date between date_sub(date '$RUN', interval 6 day) and date '$RUN'" \
+      || true; } | python deploy/bigquery/progress_block.py "$RUN" \
+    || echo "::warning::the PROGRESS block failed"
+}
+
 case "$MODE" in
 census)
   step "census: every live kosher item at or above the floor"
@@ -187,6 +201,7 @@ PY
   done_
 
   export_shortlist
+  progress
   ;;
 
 export)
