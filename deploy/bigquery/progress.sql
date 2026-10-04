@@ -6,8 +6,8 @@
 --
 -- Cost (on-demand bytes; the minimum is 10 MB per table referenced):
 --   live partition    first_seen, p2p, circle_origin and the two history arrays. The
---                     arrays dominate at 16 bytes an element: at 2.3M live items and
---                     1-3 elements each, ~50-150 MB. Nothing outside the partition.
+--                     arrays dominate at 16 bytes an element. Dry run on 2026-10-04,
+--                     2.3M live items: 106 MB. Nothing outside the partition.
 --   resolved rows     outcome over the resolved partitions for sold_total (~6-9 bytes a
 --                     resolved row: ~100 MB after a year); today's counts and the
 --                     7-day accuracy read only @run's month partitions.
@@ -19,8 +19,9 @@ DECLARE storage_gib FLOAT64;
 DECLARE billed_gib FLOAT64;
 
 -- Logical bytes, the unit the free 10 GiB is measured in. TABLE_STORAGE can lag a
--- little behind the day's writes. If it is unreadable, fall back to the dataset's own
--- __TABLES__, which the dataset grant always covers.
+-- little behind the day's writes. If it is unreadable (it was for the service account
+-- on 2026-10-04), fall back to the dataset's own __TABLES__, which the dataset grant
+-- covers. Its size_bytes are logical bytes too.
 BEGIN
   SET storage_gib = (
     SELECT ROUND(SUM(total_logical_bytes) / POW(1024, 3), 3)

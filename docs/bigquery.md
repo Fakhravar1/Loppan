@@ -268,9 +268,11 @@ category costs.
 partition dominate, at 16 bytes an element. `sold_total` reads `outcome` over the
 resolved partitions. Today's counts and the accuracy check read one or two month
 partitions. `test.sh` prints the dry-run bytes of the live-partition read on the real
-table. `storage_gib` falls back to `loppan.__TABLES__` if `TABLE_STORAGE` is
-unreadable. `billed_gib_today` leaves out SCRIPT parent jobs, which repeat their
-children's bytes, and stays NULL without `roles/bigquery.resourceViewer`.
+table: **106 MB on 2026-10-04** (2.3M live). `storage_gib` falls back to
+`loppan.__TABLES__` (also logical bytes) if `TABLE_STORAGE` is unreadable. On
+2026-10-04 the service account could not read it, so the fallback is what runs.
+`billed_gib_today` leaves out SCRIPT parent jobs, which repeat their children's bytes,
+and stays NULL without `roles/bigquery.resourceViewer`.
 
 **The PROGRESS block.** Next, `daily.sh` prints the day's numbers as plain lines between
 fixed markers, outside any `::group::`, so the log shows the block open:
