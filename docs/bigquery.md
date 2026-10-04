@@ -164,6 +164,7 @@ Alongside it:
 | `cost_params` | one row per venue: fee %, shipping by weight band; plus the buy-side shipping fee | hand-edited |
 | `seasonal_prior` | season group × sale month | loaded once from `deploy/bigquery/seasonal_prior.csv` |
 | `price_level`, `seasonal_index`, `sell_through` | brand × category, or season group × month | rebuilt daily, a few thousand rows each |
+| `progress_daily` | one row per run date: is the pipeline progressing? (§5, step 10) | kept; a rerun overwrites its day |
 
 ---
 
@@ -227,6 +228,8 @@ and `bq-fetch-sample.yml` pass in as environment. A local run needs them exporte
    Parse (as `backfill_item_origins.py` does). Collect them while the original is still
    reachable. `schema.md` explains why that cannot wait.
 9. **Model tables and export** (§6, §7).
+10. **Progress**: `progress.sql` writes the day's row in `progress_daily`, and the log
+    gets a PROGRESS block. See *Progress* below.
 
 **Schedule and the completed-run guard.** GitHub drops or badly delays scheduled runs
 under load: the daily run never fired on its own on 2026-10-03 or 2026-10-04, and both
@@ -245,6 +248,81 @@ daily with **force** ticked (`FORCE=1` skips the guard).
 **Conduct.** Step 2 sends ~7× the old Algolia request volume (~50k requests a day). It
 stays within `algolia.py`'s throttle, and Algolia is CDN infrastructure built for that.
 Every Parse call stays strictly serial, as `api-notes.md` requires.
+
+### Progress: is it moving? (step 10)
+
+After the export, `progress.sql` merges one row into **`loppan.progress_daily`**,
+`MERGE ... ON run_date`, so a rerun overwrites its day. The row is a snapshot taken at
+`computed_at`: rerunning an old date records today's live counts under that date.
+
+| Columns | What | Read from |
+|---|---|---|
+| `live_items`, `items_ever`, `enrolled_today` | size; enrolled = `first_seen` is the run date | live partition, plus today's resolutions |
+| `sold_today`, `expired_today`, `below_floor_today`, `unknown_today`; `sold_total` | outcomes resolved today; every sale ever | `resolved_on` = run date; `outcome` |
+| `price_drops_today` | live items whose last `price_history` step is dated today and lower than the one before | live partition |
+| `fav_changes_today` | live items whose last `fav_history` step is dated today. First sight is not a change | live partition |
+| `new_found`, `completeness` | the latest `runs` row for the date | `runs` |
+| `combos_ge1`, `combos_ge20`, `categories_priced` | brand × category groups with ≥ 1 and ≥ 20 sales, and categories priced | `price_level` |
+| `shortlist_now`, `shortlist_season` | candidates by signal (§7) | `shortlist_candidates` |
+| `accuracy_*` | the accuracy check, below | sales of the last 7 days |
+| `circle_with_origin`, `circle_without_origin` | live Circle items with and without a purchase price: the origins backlog | live partition |
+| `storage_gib`, `billed_gib_today` | logical GiB in `loppan`; GiB billed in the project on the run's Stockholm day, up to `computed_at` | `TABLE_STORAGE`, `JOBS_BY_PROJECT` |
+
+**The accuracy check.** Each item sold in the 7 days to the run date is priced the way
+`model.sql` prices a live item: the brand × category level (else the category's) times
+the season group's index at the sale month. `accuracy_median_ratio` is the median of
+final price ÷ that expected price, over `accuracy_n` sales. 1.0 means the model's
+expected price is the typical sale. Below 1 it expects too much, so margins on the
+shortlist are overstated; above 1 it expects too little. The `thin` pair covers groups
+with < 20 sales, which lean on their category; the `thick` pair covers groups with ≥ 20.
+
+⚠️ **It is in-sample.** Today's model already contains these sales, because the window
+is 365 days. While all sales are recent, groups with ≥ 20 sales read close to 1 by
+construction. As the window fills, it becomes a real check: a week's sales against a
+year's level and the seasonal index. The `thin` ratio shows what pooling toward the
+category costs.
+
+**Cost.** ~0.1–0.3 GB a day at 2.3M live items. The two history arrays in the live
+partition dominate, at 16 bytes an element. `sold_total` reads `outcome` over the
+resolved partitions. Today's counts and the accuracy check read one or two month
+partitions. `test.sh` prints the dry-run bytes of the live-partition read on the real
+table: **106 MB on 2026-10-04** (2.3M live). `storage_gib` falls back to
+`loppan.__TABLES__` (also logical bytes) if `TABLE_STORAGE` is unreadable. On
+2026-10-04 the service account could not read it, so the fallback is what runs.
+`billed_gib_today` leaves out SCRIPT parent jobs, which repeat their children's bytes,
+and stays NULL without `roles/bigquery.resourceViewer`.
+
+**The PROGRESS block.** Next, `daily.sh` prints the day's numbers as plain lines between
+fixed markers, outside any `::group::`, so the log shows the block open:
+
+```
+===== PROGRESS <run_date> =====
+live items:        ...  (enrolled today ..., items ever ...)
+sold today:        ...  (total ...; expired ..., below floor ..., unknown ...)
+price drops today: ...  (like changes ...)
+new found:         ...  (completeness ...)
+model:             ... brand x category with >= 20 sales  (>= 1: ...; categories priced ...)
+shortlist:         ... now, ... season
+accuracy 7d:       price / expected ..., n ...  (< 20 sales: ... n ...; >= 20: ... n ...)
+circle origins:    ... with, ... without
+storage:           ... GiB
+billed today:      ... GiB
+trend 7d:          MM-DD..MM-DD  live ...  |  sold/day ...
+===== END PROGRESS =====
+```
+
+A dash is a NULL. The trend lists only the days that have a row. `progress_block.py`
+formats it, and `test.sh` prints one from its fixtures. If `progress.sql` or the block
+fails, the run logs a `::warning::` and carries on: the data is already in.
+
+To cut the block out of a run log, for example in the morning check:
+
+```
+gh run view <id> --repo Fakhravar1/Loppan --log \
+  | sed -n '/===== PROGRESS /,/===== END PROGRESS =====/p' | cut -f3- | cut -d' ' -f2-
+```
+
+`gh` prefixes every line with the job, the step and a timestamp. The two `cut`s remove them.
 
 ---
 
@@ -498,6 +576,10 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
       updates append only on change, duplicate source rows collapse, a stray tracked
       id never enrols, a 99% run resolves nothing, a resolved row moves partition.
       Green on run 37011068601, 2026-10-02
+- [x] `progress.sql` + `progress_daily` + the PROGRESS block (§5, step 10), tested by
+      `test.sh` on fixtures with known answers: counts by outcome, price drops, like
+      changes, the latest runs row, model maturity, the accuracy ratio, an idempotent
+      MERGE. Branch `daily-progress`
 - [ ] Dry-run bytes on real volume. On synthetic rows the merge read 375 of 468
       table bytes, which proves nothing at that size
 - [x] Fetcher on branch `bigquery-fetch` (PR Fakhravar1/Loppan#4)

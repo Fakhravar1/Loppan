@@ -282,3 +282,56 @@ ALTER TABLE loppan.brand_rules SET OPTIONS (
 -- GitHub drops scheduled runs, so bq-daily.yml fires daily mode at three slots. The
 -- first to finish every step stamps its runs rows here; later slots see it and stop.
 ALTER TABLE loppan.runs ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP OPTIONS (description = "Set when daily.sh daily finished every step, export included");
+
+-- 2026-10-04: the daily progress row (docs/bigquery.md §5, step 10) ─────────────────
+
+-- One row per run_date, merged ON run_date by progress.sql at the end of daily mode.
+-- A snapshot at computed_at, not a reconstruction of run_date: a rerun overwrites it.
+CREATE TABLE IF NOT EXISTS loppan.progress_daily (
+  run_date              DATE NOT NULL,
+  -- size
+  live_items            INT64   OPTIONS (description = "Rows in the live partition"),
+  items_ever            INT64   OPTIONS (description = "Every row in items, live or resolved"),
+  enrolled_today        INT64   OPTIONS (description = "first_seen = run_date, live or already resolved"),
+  -- today's resolutions
+  sold_today            INT64,
+  expired_today         INT64,
+  below_floor_today     INT64,
+  unknown_today         INT64,
+  sold_total            INT64   OPTIONS (description = "Every sale recorded, all time"),
+  -- movement among live items
+  price_drops_today     INT64   OPTIONS (description = "Live items whose last price_history step is dated run_date and lower than the one before"),
+  fav_changes_today     INT64   OPTIONS (description = "Live items whose last fav_history step is dated run_date. First sight is not a change"),
+  -- from runs (the latest row for run_date)
+  new_found             INT64,
+  completeness          FLOAT64,
+  -- model maturity, from price_level
+  combos_ge1            INT64   OPTIONS (description = "brand x category groups with at least 1 sale in the model window"),
+  combos_ge20           INT64   OPTIONS (description = "brand x category groups with at least 20 sales: k_level, where their own evidence outweighs the category"),
+  categories_priced     INT64   OPTIONS (description = "Categories with a price level of their own"),
+  -- shortlist, from shortlist_candidates
+  shortlist_now         INT64,
+  shortlist_season      INT64,
+  -- accuracy: final price / (level x seasonal_index at the sale month), items sold in
+  -- the 7 days to run_date. Median; split by the brand x category group's sales
+  accuracy_median_ratio FLOAT64 OPTIONS (description = "Median of final price / expected sold price at the sale month, items sold in the last 7 days. In-sample: docs/bigquery.md"),
+  accuracy_n            INT64,
+  accuracy_thin_ratio   FLOAT64 OPTIONS (description = "The same, for items whose brand x category has under 20 sales"),
+  accuracy_thin_n       INT64,
+  accuracy_thick_ratio  FLOAT64 OPTIONS (description = "The same, for groups with 20 or more sales"),
+  accuracy_thick_n      INT64,
+  -- Circle origins: the live backlog daily mode works through
+  circle_with_origin    INT64   OPTIONS (description = "Live Circle items with a purchase price"),
+  circle_without_origin INT64   OPTIONS (description = "Live Circle items still without one"),
+  -- cost
+  storage_gib           FLOAT64 OPTIONS (description = "Logical GiB stored in the loppan dataset, from TABLE_STORAGE"),
+  billed_gib_today      FLOAT64 OPTIONS (description = "GiB billed in the project on run_date (Stockholm day) up to computed_at"),
+  computed_at           TIMESTAMP
+)
+OPTIONS (description = "One row per run_date: is the pipeline progressing? Merged by progress.sql at the end of daily mode. docs/bigquery.md §5");
+
+-- The service account cannot read TABLE_STORAGE, so progress.sql falls back to __TABLES__.
+ALTER TABLE loppan.progress_daily ALTER COLUMN storage_gib SET OPTIONS (
+  description = "Logical GiB stored in the loppan dataset: TABLE_STORAGE, else loppan.__TABLES__");
+ALTER TABLE loppan.progress_daily ALTER COLUMN combos_ge20 SET OPTIONS (
+  description = "brand x category groups with at least 20 sales (k_level): their own evidence weighs at least as much as the category's");
