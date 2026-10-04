@@ -228,6 +228,20 @@ and `bq-fetch-sample.yml` pass in as environment. A local run needs them exporte
    reachable. `schema.md` explains why that cannot wait.
 9. **Model tables and export** (§6, §7).
 
+**Schedule and the completed-run guard.** GitHub drops or badly delays scheduled runs
+under load: the daily run never fired on its own on 2026-10-03 or 2026-10-04, and both
+days were dispatched by hand. So `bq-daily.yml` fires daily mode at three slots, **02:23,
+04:47 and 07:13 UTC**, all off the hour and all on the same Stockholm run date.
+`daily.sh` stamps `runs.completed_at` as its very last step, after the shortlist export,
+so the stamp means every step finished. Before any work, brand counts included, daily
+mode checks for a stamped row with today's `run_date`; if there is one it prints
+"today's run already completed at …; nothing to do" and exits 0 in seconds. A slot after
+a failed run finds no stamp and runs the day again, which is safe because every merge is
+idempotent, just wasteful. The `bq-daily` concurrency group queues a slot behind a run
+in progress instead of overlapping it; GitHub keeps one waiting run, so a newer slot
+replaces a waiting one, which shows as cancelled. To redo a completed day, dispatch
+daily with **force** ticked (`FORCE=1` skips the guard).
+
 **Conduct.** Step 2 sends ~7× the old Algolia request volume (~50k requests a day). It
 stays within `algolia.py`'s throttle, and Algolia is CDN infrastructure built for that.
 Every Parse call stays strictly serial, as `api-notes.md` requires.
@@ -470,8 +484,13 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
       1,500 Circle origins in 50 min; resolve + model 45 s. It ran on the census's own
       date, so the `updated_run` guard skipped same-day updates, as designed. The 527
       items already under 150 kr close on the next day's run
-- [ ] Cron live from `main` (02:00 UTC daily), watched by `bq-health` and a morning
+- [ ] Cron live from `main` (02:23 UTC daily), watched by `bq-health` and a morning
       Claude check
+- [ ] Three daily slots (02:23, 04:47, 07:13 UTC) behind the `completed_at` guard (§5),
+      because GitHub dropped the scheduled run on 2026-10-03 and 2026-10-04. The first
+      slot to finish stamps `runs.completed_at`; later slots exit 0. `bq-health` runs at
+      06:11 and 08:41 UTC so one dropped slot can't silence the alarm. Done once a day
+      shows one full run and the later slots exiting on the guard
 - [ ] `shortlist_candidates` hits the 30,000 cap on day one only because a few hundred
       sales price everything. Treat it as meaningless until weeks of sales exist
 - [x] `merge_sweep.sql` and `merge_resolve.sql` (Circle origins, then gated outcomes),

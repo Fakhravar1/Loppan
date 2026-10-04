@@ -278,3 +278,7 @@ WHERE rule IN ('min_median_sold_kr', 'top_n_brands', 'min_sales_measured', 'exit
 
 ALTER TABLE loppan.brand_rules SET OPTIONS (
   description = "docs/bigquery.md §12: a brand becomes kosher, for good, once it has min_listings live listings at or above min_price_kr");
+
+-- GitHub drops scheduled runs, so bq-daily.yml fires daily mode at three slots. The
+-- first to finish every step stamps its runs rows here; later slots see it and stop.
+ALTER TABLE loppan.runs ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP OPTIONS (description = "Set when daily.sh daily finished every step, export included");
