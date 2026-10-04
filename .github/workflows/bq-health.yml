@@ -1,0 +1,42 @@
+name: bq-health
+
+# Daily health check (deploy/bigquery/health.sql). A failing ASSERT fails this run, and
+# GitHub emails the repository owner about failed scheduled runs: that is the alert.
+#   - no pipeline run today or yesterday
+#   - the latest run was under the 99.5% completeness gate
+#   - more than 10 GiB billed across the project in 24 h
+# Until the daily pipeline exists only the cost check runs, so it can be live now.
+#
+# The schedule only fires from the default branch. The push trigger exercises it on a
+# branch whenever this file or the check changes.
+
+on:
+  schedule:
+    - cron: "11 6 * * *"  # 08:11 Stockholm (summer time); off the hour, which GitHub drops under load
+  workflow_dispatch:
+  push:
+    paths:
+      - deploy/bigquery/health.sql
+      - .github/workflows/bq-health.yml
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Check
+        run: bq --location=EU query --use_legacy_sql=false --format=pretty < deploy/bigquery/health.sql

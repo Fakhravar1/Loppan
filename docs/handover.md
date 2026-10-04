@@ -55,14 +55,14 @@ Researched and confirmed 2026-08-04. These numbers drive everything downstream.
 
 | Fact | Value | Source |
 |---|---|---|
-| **Circle seller share** | **80%** of sale value | [Vad är Circle?](https://intercom.help/sellpy/sv/articles/3177498-vad-ar-sellpy-circle) |
+| **Circle seller share** | **80%** of sale value | the marketplace's help centre (Circle: *Vad är Circle?*) |
 | Circle listing fee | none | same |
 | Circle eligibility | only items **you previously bought on the marketplace** | same |
-| Circle logistics | **you keep and ship the item**; the marketplace books shipping, sends a QR code; ship within **5 days** of sale | [Hur skickar jag en såld Circle-vara?](https://intercom.help/sellpy/sv/articles/3177574-hur-skickar-jag-en-sald-sellpy-circle-vara) |
-| Circle listing flow | re-upload the ad from your profile, reusing the marketplace's existing item data; you set the price and update condition/photos | [Hur säljer jag en vara med Circle?](https://intercom.help/sellpy/sv/articles/3177610-hur-saljer-jag-ett-tidigare-kop-med-sellpy-circle) |
+| Circle logistics | **you keep and ship the item**; the marketplace books shipping, sends a QR code; ship within **5 days** of sale | the marketplace's help centre (Circle: shipping a sold item) |
+| Circle listing flow | re-upload the ad from your profile, reusing the marketplace's existing item data; you set the price and update condition/photos | the marketplace's help centre (Circle: listing a previous purchase) |
 | Normal consignment share (for contrast) | 60% up to 500 kr, 70% above | [Nyheter24](https://nyheter24.se/nyheter/ekonomi/privatekonomi/1255337-salja-second-hand-sa-mycket-av-dina-pengar-tar-sidorna) |
-| Price ladder | seller controls ~first 2 weeks; **auto-discounting from ~week 3**; floor **30 kr**; after ~90 days donated or recycled | [Hur prissätts mina varor?](https://intercom.help/sellpy/en/articles/1219089-how-are-my-items-priced) |
-| Favourites | The marketplace notifies on **price drops** for favourited items, and on **new arrivals** for followed brands | [App Store listing](https://apps.apple.com/se/app/sellpy-k%C3%B6p-s%C3%A4lj-second-hand/id1594599102) |
+| Price ladder | seller controls ~first 2 weeks; **auto-discounting from ~week 3**; floor **30 kr**; after ~90 days donated or recycled | the marketplace's help centre (how items are priced) |
+| Favourites | The marketplace notifies on **price drops** for favourited items, and on **new arrivals** for followed brands | the marketplace's App Store listing |
 | Favourite counts | shown publicly on listings as social proof | [Zarko Lindkvist](https://zarko.se/topp-20-e-handlare-del-2-favoritmarkering-av-produkter/) |
 
 **Circle's 20% take rate vs. 30–40% for normal consignment is the structural gift.** The

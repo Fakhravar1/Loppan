@@ -1,0 +1,82 @@
+name: bq-schema
+
+# Applies deploy/bigquery/schema.sql, reloads the seasonal prior, then runs test.sh. Every statement in
+# the schema is IF NOT EXISTS or a keyed MERGE, so running this on every change is safe:
+# it creates what is missing and leaves existing tables and tuned parameters alone.
+#
+# Runs as loppan-pipeline through Workload Identity Federation, exactly like bq-smoke.yml.
+# Load jobs and DDL cost nothing; the MERGE on brand_rules reads a few hundred bytes.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - deploy/bigquery/**
+      - .github/workflows/bq-schema.yml
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: bq-schema
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Apply schema.sql
+        run: bq --location=EU query --use_legacy_sql=false < deploy/bigquery/schema.sql
+
+      # --replace: the CSV is the source of truth for the prior, so a reload overwrites.
+      - name: Load the seasonal prior
+        run: >
+          bq --location=EU load --replace --source_format=CSV --skip_leading_rows=1
+          loppan.seasonal_prior deploy/bigquery/seasonal_prior.csv
+          season_group:STRING,sale_month:INTEGER,n:INTEGER,median_kept_pct:FLOAT,seasonal_index:FLOAT
+
+      - name: What exists now
+        run: |
+          bq ls --max_results=50 loppan
+          bq --location=EU query --use_legacy_sql=false --format=pretty \
+            'select table_name, ddl like "%PARTITION BY%" as partitioned,
+                    ddl like "%CLUSTER BY%" as clustered
+             from loppan.INFORMATION_SCHEMA.TABLES order by 1'
+          bq --location=EU query --use_legacy_sql=false --format=pretty \
+            'select * from loppan.brand_rules order by rule'
+          bq --location=EU query --use_legacy_sql=false --format=pretty \
+            'select season_group, count(*) months, sum(n) sales,
+                    round(min(seasonal_index), 2) lo, round(max(seasonal_index), 2) hi
+             from loppan.seasonal_prior group by 1 order by 1'
+
+  # The merges and the model against synthetic rows in throwaway loppan._t_* tables.
+  # After apply, because the tests copy the live table definitions with LIKE.
+  test:
+    needs: apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Merges and model on synthetic data
+        run: bash deploy/bigquery/test.sh

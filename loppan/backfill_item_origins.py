@@ -37,58 +37,15 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from loppan import db, market
+# The origin lookup itself (two Parse requests per item) lives in outcomes.py, which
+# imports no database, so the BigQuery path shares it. FIELDS is the row shape:
+# PostgREST rejects a batch whose objects do not all carry the same keys ("All object
+# keys must match"), so every row is built with explicit nulls rather than omissions.
+from loppan.outcomes import FIELDS, origin_of  # noqa: F401  (FIELDS kept for callers)
 
 DATA = pathlib.Path(__file__).resolve().parent.parent / "data"
 CACHE = DATA / "item_origins.jsonl"
 FLUSH_EVERY = 100   # rows buffered before a write, i.e. ~3 minutes of collection
-
-# PostgREST rejects a batch whose objects do not all carry the same keys ("All object
-# keys must match"), so every row is built from this shape with explicit nulls rather
-# than by omitting fields.
-FIELDS = ("item_id", "original_id", "bought_price_ore", "bought_on",
-          "original_opening_ore", "original_rungs", "bought_discount")
-
-
-def _day(value):
-    if isinstance(value, dict):
-        value = value.get("iso")
-    return value[:10] if value else None
-
-
-def _ore(kr):
-    """Parse quotes kronor. Everything downstream of here is öre."""
-    return int(round(kr * 100)) if kr is not None else None
-
-
-def origin_of(circle_id: str) -> dict | None:
-    """What the seller paid, and how marked-down the item was when they bought.
-
-    Returns None when the listing carries no `preceding` pointer at all — that is a
-    Circle item whose purchase side is simply not recorded, not a failure.
-    """
-    circle = market.item(circle_id)
-    preceding = circle.get("preceding")
-    if not preceding:
-        return None
-
-    row = dict.fromkeys(FIELDS)
-    row["item_id"] = circle_id
-    row["original_id"] = preceding["objectId"]
-
-    ladder = market.ladder(row["original_id"])
-    if not ladder:
-        return row  # linked, but the original's price history is gone
-
-    opening = ladder[0]["pricing"]["amount"]
-    paid = ladder[-1]["pricing"]["amount"]
-    row.update({
-        "bought_price_ore": _ore(paid),
-        "bought_on": _day(ladder[-1].get("endedAt")),
-        "original_opening_ore": _ore(opening),
-        "original_rungs": len(ladder),
-        "bought_discount": round(1 - paid / opening, 3) if opening else None,
-    })
-    return row
 
 
 def _cached() -> dict[str, dict]:
@@ -148,9 +105,9 @@ def main() -> None:
     # docs/api-notes.md and is not what this flag relaxes.
     if "--interval" in sys.argv:
         market.MIN_INTERVAL_S = float(sys.argv[sys.argv.index("--interval") + 1])
-    print(f"the marketplace interval: {market.MIN_INTERVAL_S}s "
+    print(f"Marketplace interval: {market.MIN_INTERVAL_S}s "
           f"(~{1/market.MIN_INTERVAL_S:.1f} req/s, serial)" if market.MIN_INTERVAL_S
-          else "the marketplace interval: unthrottled")
+          else "Marketplace interval: unthrottled")
 
     todo = targets()
     if not todo:

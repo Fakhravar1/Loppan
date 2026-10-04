@@ -61,10 +61,10 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from loppan import algolia, cohort, db, market
+from loppan import algolia, db
+from loppan.outcomes import ADJUDICATE, adjudicate_detailed
 
 WRITE_BATCH = 500
-ADJUDICATE = 60      # MarketOffer $in ceiling, verified
 PAGE_ITEMS = 20_000  # live rows held at once; sets peak memory, see live_item_pages
 STAMP_BATCH = 5_000  # ids per stamp_last_seen call; sent in the body, so no URL ceiling
 
@@ -249,29 +249,13 @@ def adjudicate(item_ids: list[str]) -> dict[str, tuple[int, int | None]]:
     """Ask Parse what actually happened. Returns item_id -> (outcome, final_ore).
 
     Serial and throttled on purpose: this is the marketplace's own backend, not a CDN.
+
+    The Parse logic lives in outcomes.py, which imports no database, so the BigQuery
+    path can share it. A batch that errors is simply absent here, as before.
     """
-    out: dict[str, tuple[int, int | None]] = {}
-    for i in range(0, len(item_ids), ADJUDICATE):
-        chunk = item_ids[i:i + ADJUDICATE]
-        pointers = [{"__type": "Pointer", "className": "Item", "objectId": x} for x in chunk]
-        try:
-            offers = market.find(
-                "MarketOffer",
-                {"item": {"$in": pointers}, "region": "SE", "latest": True},
-                limit=200, include="item")
-        except Exception as exc:
-            print(f"  adjudication batch {i}: {type(exc).__name__}", file=sys.stderr)
-            continue
-        for offer in offers:
-            item = offer.get("item") or {}
-            item_id = item.get("objectId")
-            if not item_id:
-                continue
-            verdict = cohort.STATUS_OUTCOME.get(item.get("itemStatus"), "unknown")
-            price = (offer.get("pricing") or {}).get("amount")
-            out[item_id] = (OUTCOME.get(verdict, 3),
-                            int(price * 100) if price else None)
-    return out
+    verdicts, _failed = adjudicate_detailed(item_ids)
+    return {item_id: (OUTCOME.get(verdict, 3), final)
+            for item_id, (verdict, final, _status) in verdicts.items()}
 
 
 def main() -> None:
