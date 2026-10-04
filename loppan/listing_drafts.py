@@ -126,7 +126,7 @@ def _ranged(n: float, demo: str | None, table: dict, prefix: str, what: str,
     low, top = table[demo]
     whole = int(n)
     reasons = [] if n == whole else [
-        f"size assumed: half size {label} listed as {prefix}{whole}; say {label} in the text"]
+        f"size assumed: half size {label} listed as {prefix}{whole} (the text keeps {label})"]
     if whole >= top:
         return f"{prefix}{top}+", reasons
     if whole < low:
