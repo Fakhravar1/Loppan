@@ -49,7 +49,7 @@ def main() -> None:
         wins = [p for p in profit if p > 0]
         print(f"  median multiple (sale ÷ purchase) : {med(mult):.2f}x")
         print(f"  median profit at k={KEEP_SHARE}          : {med(profit):+.0f} kr")
-        print(f"  profitable after Sellpy's cut     : {len(wins)}/{len(profit)} "
+        print(f"  profitable after the marketplace's cut     : {len(wins)}/{len(profit)} "
               f"({100*len(wins)/len(profit):.0f}%)")
         print(f"  median purchase price             : {med([r['bought_price'] for r in sold]):.0f} kr")
         print(f"  median days held before relisting : {med([r['days_held'] for r in sold]):.0f}")

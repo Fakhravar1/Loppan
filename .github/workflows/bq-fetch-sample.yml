@@ -12,6 +12,9 @@ name: bq-fetch-sample
 # sample's ids all come from the census, so none is under 150 kr; a second track
 # pass with the floor raised to 300 kr produces real below_floor rows instead,
 # without writing any price under 150 kr.
+#
+# 2026-10-04: rerun with the marketplace endpoints read from the environment
+# (loppan/endpoints.py) instead of hardcoded in the source.
 
 on:
   push:
@@ -25,6 +28,14 @@ permissions:
 concurrency:
   group: bq-fetch-sample
   cancel-in-progress: false
+
+env:
+  # Marketplace endpoints: public values kept out of the repository so the source
+  # does not name the target (loppan/endpoints.py). Repository VARIABLES, not secrets.
+  LOPPAN_MARKET_API: ${{ vars.LOPPAN_MARKET_API }}
+  LOPPAN_MARKET_GRAPHQL: ${{ vars.LOPPAN_MARKET_GRAPHQL }}
+  LOPPAN_MARKET_SITE: ${{ vars.LOPPAN_MARKET_SITE }}
+  LOPPAN_MARKET_IMAGE_HOSTS: ${{ vars.LOPPAN_MARKET_IMAGE_HOSTS }}
 
 jobs:
   sample:

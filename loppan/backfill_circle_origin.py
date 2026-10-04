@@ -3,7 +3,7 @@
 Time-sensitive, which is why it runs as its own job rather than waiting.
 
 A Circle listing points back, via `preceding`, to the item its seller originally
-bought from Sellpy. Once a tracked Circle item sells we will see what it fetched —
+bought from the marketplace. Once a tracked Circle item sells we will see what it fetched —
 but the purchase price lives on the *original* listing, and there is no guarantee
 that stays reachable. Capturing the link now is what turns "did it sell" into the
 full round trip: paid P, sold for S, so the multiple was S/P.
@@ -24,7 +24,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from loppan import db, sellpy
+from loppan import db, market
 
 
 def _day(value):
@@ -42,7 +42,7 @@ FIELDS = ("item_id", "original_id", "bought_price", "bought_on",
 
 def origin_of(circle_id: str) -> dict | None:
     """What the seller paid, and how marked-down the item was when they bought."""
-    circle = sellpy.item(circle_id)
+    circle = market.item(circle_id)
     preceding = circle.get("preceding")
     if not preceding:
         return None
@@ -51,7 +51,7 @@ def origin_of(circle_id: str) -> dict | None:
     row["item_id"] = circle_id
     row["original_id"] = preceding["objectId"]
 
-    ladder = sellpy.ladder(row["original_id"])
+    ladder = market.ladder(row["original_id"])
     if not ladder:
         return row  # linked, but the original's price history is gone
 
@@ -72,9 +72,9 @@ CACHE = DATA / "circle_origins.jsonl"
 
 
 def _cached() -> dict[str, dict]:
-    """Origins already fetched from Sellpy, keyed by Circle item id.
+    """Origins already fetched from the marketplace, keyed by Circle item id.
 
-    Fetching costs two Sellpy requests per item and roughly 17 minutes for the
+    Fetching costs two the marketplace requests per item and roughly 17 minutes for the
     whole stratum. A database error should not make us pay that again, so every
     origin is written here the moment it is known, and a re-run resumes from it.
     """
@@ -98,7 +98,7 @@ def main() -> None:
     cache = _cached()
     fetch = [r for r in todo if r["item_id"] not in cache]
     print(f"{len(todo)} to backfill | {len(cache)} already fetched | "
-          f"{len(fetch)} to pull from Sellpy (~{max(1, len(fetch)*2//60)} min)")
+          f"{len(fetch)} to pull from the marketplace (~{max(1, len(fetch)*2//60)} min)")
 
     DATA.mkdir(parents=True, exist_ok=True)
     missing, failed = 0, 0

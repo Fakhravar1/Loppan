@@ -1,9 +1,9 @@
-# Sellpy arbitrage crawler — handover
+# The marketplace arbitrage crawler — handover
 
 **Status:** design phase, no code written yet. **Site recon DONE 2026-08-04** (§5).
 **Date:** 2026-08-04 (created), updated 2026-08-04 after laptop recon.
 **Why this file exists:** the design conversation happened in a remote Claude Code session
-whose egress policy blocks `sellpy.se`, so nothing could be fetched or tested against the
+whose egress policy blocks the marketplace's domain, so nothing could be fetched or tested against the
 live site. That recon has since been run from a laptop — §5 now holds results, not commands.
 
 > ⚠️ This project has **nothing to do with claim-my-train**. It lives on this branch only
@@ -18,17 +18,17 @@ Earlier drafts of this file used shorthand without defining it. Every symbol use
 
 | Term | What it actually means |
 |---|---|
-| **P** | **P**urchase price — what you paid Sellpy for the item. |
+| **P** | **P**urchase price — what you paid the marketplace for the item. |
 | **S** | **S**ale price — what your buyer pays you on Circle. |
 | **m** | The **m**ultiple: `S ÷ P`. How many times your money came back before fees. Buy at 50, sell at 250, m = 5. |
-| **k** | The share you **k**eep after Sellpy's cut. Cash payout k = 0.80. Payout taken as Sellpy **credit** (+5%) k = 0.84. |
+| **k** | The share you **k**eep after the marketplace's cut. Cash payout k = 0.80. Payout taken as the marketplace **credit** (+5%) k = 0.84. |
 | **s** | **S**ell-through — of every 10 items bought, how many eventually sell. 6 of 10 → s = 0.6. **Never measured. This is the biggest hole in the whole project.** |
 | **E[x]** | "Expected x" — the average of x over many repetitions. `E[days to sell]` = how long an item like this usually takes. |
 | **reference price** | The typical price that *comparable items actually sold for* (not what they were listed at). Earlier drafts called this `ref_p50`. |
-| **the ladder** | Sellpy's automatic markdown schedule. An item is listed high and stepped down every ~10 days until it sells or expires. |
+| **the ladder** | The marketplace's automatic markdown schedule. An item is listed high and stepped down every ~10 days until it sells or expires. |
 | **rung** | One step on that ladder. "Bought at rung 11" = the price had already been cut ten times. |
-| **opening ask** | The very first price Sellpy listed the item at, before any markdown. |
-| **dwell** | Days between Sellpy sorting an item (`assortedAt`) and actually listing it (`putOnShelfAt`). |
+| **opening ask** | The very first price the marketplace listed the item at, before any markdown. |
+| **dwell** | Days between the marketplace sorting an item (`assortedAt`) and actually listing it (`putOnShelfAt`). |
 
 The profit formula in words:
 
@@ -41,28 +41,28 @@ The profit formula in words:
 
 ## 1. The idea
 
-Buy underpriced second-hand clothing on Sellpy, warehouse it personally, relist it on
-**Sellpy Circle** at a markup. Automate the discovery of what to buy, since Sellpy's
+Buy underpriced second-hand clothing on the marketplace, warehouse it personally, relist it on
+**Circle** at a markup. Automate the discovery of what to buy, since the marketplace's
 catalogue is far too large to browse manually.
 
 Personal-use project, one operator, one account.
 
 ---
 
-## 2. Verified facts about Sellpy
+## 2. Verified facts about the marketplace
 
 Researched and confirmed 2026-08-04. These numbers drive everything downstream.
 
 | Fact | Value | Source |
 |---|---|---|
-| **Circle seller share** | **80%** of sale value | [Vad är Sellpy Circle?](https://intercom.help/sellpy/sv/articles/3177498-vad-ar-sellpy-circle) |
+| **Circle seller share** | **80%** of sale value | the marketplace's help centre (Circle: *Vad är Circle?*) |
 | Circle listing fee | none | same |
-| Circle eligibility | only items **you previously bought on Sellpy** | same |
-| Circle logistics | **you keep and ship the item**; Sellpy books shipping, sends a QR code; ship within **5 days** of sale | [Hur skickar jag en såld Circle-vara?](https://intercom.help/sellpy/sv/articles/3177574-hur-skickar-jag-en-sald-sellpy-circle-vara) |
-| Circle listing flow | re-upload the ad from your profile, reusing Sellpy's existing item data; you set the price and update condition/photos | [Hur säljer jag en vara med Circle?](https://intercom.help/sellpy/sv/articles/3177610-hur-saljer-jag-ett-tidigare-kop-med-sellpy-circle) |
+| Circle eligibility | only items **you previously bought on the marketplace** | same |
+| Circle logistics | **you keep and ship the item**; the marketplace books shipping, sends a QR code; ship within **5 days** of sale | the marketplace's help centre (Circle: shipping a sold item) |
+| Circle listing flow | re-upload the ad from your profile, reusing the marketplace's existing item data; you set the price and update condition/photos | the marketplace's help centre (Circle: listing a previous purchase) |
 | Normal consignment share (for contrast) | 60% up to 500 kr, 70% above | [Nyheter24](https://nyheter24.se/nyheter/ekonomi/privatekonomi/1255337-salja-second-hand-sa-mycket-av-dina-pengar-tar-sidorna) |
-| Price ladder | seller controls ~first 2 weeks; **auto-discounting from ~week 3**; floor **30 kr**; after ~90 days donated or recycled | [Hur prissätts mina varor?](https://intercom.help/sellpy/en/articles/1219089-how-are-my-items-priced) |
-| Favourites | Sellpy notifies on **price drops** for favourited items, and on **new arrivals** for followed brands | [App Store listing](https://apps.apple.com/se/app/sellpy-k%C3%B6p-s%C3%A4lj-second-hand/id1594599102) |
+| Price ladder | seller controls ~first 2 weeks; **auto-discounting from ~week 3**; floor **30 kr**; after ~90 days donated or recycled | the marketplace's help centre (how items are priced) |
+| Favourites | The marketplace notifies on **price drops** for favourited items, and on **new arrivals** for followed brands | the marketplace's App Store listing |
 | Favourite counts | shown publicly on listings as social proof | [Zarko Lindkvist](https://zarko.se/topp-20-e-handlare-del-2-favoritmarkering-av-produkter/) |
 
 **Circle's 20% take rate vs. 30–40% for normal consignment is the structural gift.** The
@@ -73,7 +73,7 @@ whole business is built on it.
 | Question | Answer | Consequence |
 |---|---|---|
 | Do Circle listings auto-discount? | **No.** The seller keeps price control indefinitely. | **This is the thesis, confirmed structurally.** Consignment sellers are on a ladder and a clock; you are on neither. "You own a shelf; they own a countdown" is not a metaphor — it's the mechanism. |
-| Who pays shipping? | **Sellpy pays it, out of the 20% cut.** | The 80% is genuinely net. The §3 break-even math stands unchanged. |
+| Who pays shipping? | **The marketplace pays it, out of the 20% cut.** | The 80% is genuinely net. The §3 break-even math stands unchanged. |
 
 ### Still not verified — check these first
 - **Does the ~90-day donate/recycle expiry still apply to Circle listings?** No auto-discount is
@@ -99,7 +99,7 @@ whole business is built on it.
 > every claim in §3 as a hypothesis with an attached test, not as a finding.
 
 The core structural claim — the one thing that is closer to fact than theory, because it follows
-from Sellpy's published terms rather than from data:
+from the marketplace's published terms rather than from data:
 
 > Consignment sellers operate under a price ladder and an end-of-life; Circle sellers set their own
 > price and (as far as we know) do not auto-discount. **You own a shelf; they own a countdown.**
@@ -119,7 +119,7 @@ not because they are bad. Buy out of season, sell in season. Storage costs nothi
   winter and spring, then sold in **late June** — the week sandal season starts, at 94% of the
   original asking price.
 
-**This is now the best-supported idea in the file.** Note that Sellpy tags season natively
+**This is now the best-supported idea in the file.** Note that the marketplace tags season natively
 (`metadata.season = ["Höst","Vinter"]`), so this needs no inference at all.
 
 **Practical implication:** listing an item out of season doesn't lose money, it just parks capital.
@@ -128,17 +128,17 @@ The sandals only needed a 6% price cut across six months. Time on the shelf is c
 
 ### Idea 2 — Wrong price from the start (mispricing at listing)
 
-Sellpy's pricing algorithm sometimes just gets an item badly wrong on day one. A wool-and-cashmere
+The marketplace's pricing algorithm sometimes just gets an item badly wrong on day one. A wool-and-cashmere
 COS coat opened at **55 kr**. That isn't decay, it's an error, and the error is the entire profit.
 
-**What the trades say:** the two items Sellpy opened cheap (55, 170) both returned **5×**. The two
+**What the trades say:** the two items the marketplace opened cheap (55, 170) both returned **5×**. The two
 it opened expensively (1070, 1480) returned **1.4×** and **2.0×**.
 
 **If true it inverts the original buy rule**, which anchors the valuation on the listing price — you
 cannot multiply a ratio onto a base that is itself the error you're harvesting.
 
-**Candidate screen:** Sellpy's sell-score high (their model says it will sell) **and** opening ask
-low for its brand/category/condition. The *contradiction between Sellpy's own two signals* is what
+**Candidate screen:** the marketplace's sell-score high (their model says it will sell) **and** opening ask
+low for its brand/category/condition. The *contradiction between the marketplace's own two signals* is what
 you're looking for. Neither number works alone: the highest-scoring items (0.966 and 0.930) were
 the two worst trades.
 
@@ -155,7 +155,7 @@ worth.
 *Kept because the reasoning is instructive, not because it survived.*
 
 **The claim was:** a long markdown ladder is a record of the market refusing the item at every
-price above where you bought. Sellpy asked 1,480 for the sandals and got no takers, then 1,340,
+price above where you bought. The marketplace asked 1,480 for the sandals and got no takers, then 1,340,
 1,180, … down to 370 — ten refusals. Relisting at 800 asks a price the market already declined
 three times, so your resale ceiling is capped by refusals that already happened. A *short* ladder
 means the price was never tested, so nothing caps you.
@@ -183,7 +183,7 @@ these apart without spending money.
 ### The reframe that survives all three: you never need absolute valuation
 
 You do not need to know what an Acne tee is worth. You need to know **what it's worth in November
-versus what it costs in June** — or, under Theory B, what it's worth versus what Sellpy opened it
+versus what it costs in June** — or, under Theory B, what it's worth versus what the marketplace opened it
 at. Both are ratios, and item-specific unknowns cancel out of a ratio.
 
 This holds regardless of which theory wins, which is why it is the safest thing in this section.
@@ -197,16 +197,16 @@ profit = s · k · S − P     s = sell-through, S = sale price, P = buy price, 
 **`k` is a lever, and two things move it** (both operator-supplied 2026-08-04, neither yet verified
 in the data):
 
-| Route | What you keep | Effective Sellpy fee |
+| Route | What you keep | Effective the marketplace fee |
 |---|---|---|
 | Circle payout taken as **cash** | 0.800 | 20.0% |
 | Cash payout, next buy funded by **Amex** (1.35% cashback) | 0.811 | 18.9% |
-| Circle payout taken as **Sellpy credit (+5%)** | **0.840** | **16.0%** |
+| Circle payout taken as **the marketplace credit (+5%)** | **0.840** | **16.0%** |
 
-Taking the payout as **Sellpy credit is worth ~3.6 pp more per cycle than cash + Amex cashback**,
+Taking the payout as **the marketplace credit is worth ~3.6 pp more per cycle than cash + Amex cashback**,
 and the two do not stack on the same krona — credit funds the next purchase directly, so no card is
 involved and no cashback accrues. The rule that falls out: **recycle proceeds as credit; use Amex
-only for fresh capital injected from outside.** The +5% is not a rounding error — it cuts Sellpy's
+only for fresh capital injected from outside.** The +5% is not a rounding error — it cuts the marketplace's
 commission by a fifth, from 20% to 16%.
 
 Caveat before relying on it: confirm whether the +5% credit conversion has a cap, an expiry, or any
@@ -281,7 +281,7 @@ The mechanics below are **read from the API**, not recalled. The *interpretation
 |---|---|---|---|---|
 | Season tag | — | Vår, Sommar | — | Höst, Vinter |
 | Condition / defect | Acceptabelt, Fläckig | Bra, Fläck | Bra, none | Bra, pilling |
-| Sellpy sell-score | 0.930 | **0.966** | 0.732 | 0.899 |
+| The marketplace sell-score | 0.930 | **0.966** | 0.732 | 0.899 |
 | Warehouse dwell | 2 d | 2 d | 11 d | **440 d** |
 | **Opening ask** | 1070 | **1480** | 170 | **55** |
 | Ladder before you bought | 8 rungs | **11 rungs** | 4 rungs | 2 rungs |
@@ -299,9 +299,9 @@ denominator they would be meaningless.
 
 **The one ordering that holds across all four:** the more the price had already been marked down
 before you bought, the lower your multiple. 11 rungs → 2.0×; 8 → 1.4×; 4 → 5.0×; 2 → 5.0×. Buy
-price runs the same way (370/420 → low, 50/120 → high), because on Sellpy the two are nearly the
+price runs the same way (370/420 → low, 50/120 → high), because on the marketplace the two are nearly the
 same thing: expensive items are usually expensive *because* they started high and have been walked
-down. **Whether the driver is the markdown history or simply that Sellpy priced those items
+down. **Whether the driver is the markdown history or simply that the marketplace priced those items
 correctly to begin with is not resolvable at n=4** — see Idea 2 vs Idea 4.
 
 ### What is actually scarce — correcting an earlier error in this file
@@ -310,7 +310,7 @@ An earlier draft ranked opportunities by "profit per krona-day" and concluded th
 beat expensive, slow ones by ~100×. **That ranking assumes capital and time are the scarce
 resources. At this scale they are not**, and the operator has corrected two of the three inputs:
 
-- **Labour per item is minimal.** Discovery is automated. Sellpy **reuses the original ad**, so
+- **Labour per item is minimal.** Discovery is automated. The marketplace **reuses the original ad**, so
   there is no photography or copywriting. Items ship in the box they arrived in. Realistically
   ~10 minutes an item, not the 20–40 previously assumed.
 - **Shelf time is nearly free.** The sandals sat six months and sold at 94% of ask. Holding an item
@@ -326,7 +326,7 @@ draft allowed.** 20 items a year at +1,500 each is a very different operation fr
 for similar money and a tenth of the shipping obligations.
 
 This does **not** resolve to "buy expensive". The four trades say expensive items bought at the
-bottom of long ladders returned 1.4–2.0×. What it argues for is a *large ticket that Sellpy opened
+bottom of long ladders returned 1.4–2.0×. What it argues for is a *large ticket that the marketplace opened
 cheap* — high absolute margin and few transactions. Whether such items exist in quantity is
 precisely what §11 is designed to find out.
 
@@ -334,12 +334,12 @@ precisely what §11 is designed to find out.
 - `p2pValueShare: {version: 1, customerShare: 0.8}` on the Circle listings — the 80% share is in
   the data.
 - **Circle payouts lag the sale by 21–24 days; consignment payouts are same-day.** Measured on all
-  six records: for the three items *bought* (Sellpy holds the stock) `paidAt` equals the last
+  six records: for the three items *bought* (the marketplace holds the stock) `paidAt` equals the last
   offer's `endedAt` exactly; for the three *Circle* sales it lags 24 / 21 / 22 days — presumably
   the shipping + return window, since on Circle you ship it yourself. Your capital is locked ~3
   weeks past the sale on every Circle trade. Cash-flow only, not margin.
 - Circle listings are the same Parse class `Item`; a price change creates a new `MarketOffer` row,
-  so your own relist history is queryable the same way as Sellpy's ladders.
+  so your own relist history is queryable the same way as the marketplace's ladders.
 - One Circle listing was **manually discounted** (800 → 600). Consistent with "no auto-discount" —
   the seller changed it.
 
@@ -348,8 +348,8 @@ precisely what §11 is designed to find out.
    it dominates every other consideration, and **absolute buy price is the variable to watch.**
 2. The trade the original §3 recommended (deep decay tail, Carhartt) was the worst of the three;
    the two short-ladder buys were the best. Hence Theory B.
-3. Measured against Sellpy's own opening ask, the sale prices were 0.56× / 3.5× / 4.5×. The two
-   profitable trades were the two where Sellpy opened low.
+3. Measured against the marketplace's own opening ask, the sale prices were 0.56× / 3.5× / 4.5×. The two
+   profitable trades were the two where the marketplace opened low.
 4. The highest `sellability score` produced the worst trade — so score alone is not a buy signal,
    and may even be inversely related to edge (a high score plausibly means correctly priced, which
    means no mispricing to harvest).
@@ -417,7 +417,7 @@ of three places, and "spotting underpriced items" is not among them:
 
 ### 3.6.4 What other people attempting this actually achieve
 
-240 observed Circle round trips by other sellers — bought on Sellpy, relisted on Circle:
+240 observed Circle round trips by other sellers — bought on the marketplace, relisted on Circle:
 
 | Status | n | Median ask multiple | Avg days on Circle |
 |---|---|---|---|
@@ -500,8 +500,8 @@ Recorded so they don't get re-proposed. Some of these were argued out over sever
 |---|---|
 | **Seasonality is the primary edge** | Mechanical, automatable, no judgment required. Explains why warehousing is the business. |
 | **Relative valuation only** | Ratios cancel item-specific unknowns; absolute valuation is unnecessary and much harder. |
-| **Use Sellpy's own notifications** as the event stream | Brand-follow = discovery, favourite = enrol in price-drop alerts, price-drop emails = the price time-series, sold/gone = terminal event. Free, sanctioned, zero infra. |
-| **Log the landing price** as a feature | It's an *ask*, not a transaction — systematically too high (that's what the decay ladder proves). But Sellpy's algorithm prices consignment items **consistently**, so the bias cancels in ratios. Good relative signal, bad absolute one. |
+| **Use the marketplace's own notifications** as the event stream | Brand-follow = discovery, favourite = enrol in price-drop alerts, price-drop emails = the price time-series, sold/gone = terminal event. Free, sanctioned, zero infra. |
+| **Log the landing price** as a feature | It's an *ask*, not a transaction — systematically too high (that's what the decay ladder proves). But the marketplace's algorithm prices consignment items **consistently**, so the bias cancels in ratios. Good relative signal, bad absolute one. |
 | **Crawler as primary intake, email as supplement** | **SETTLED 2026-08-04 by the §5 recon.** Emails only cover items you already favourited → cold start of a full season before the system can trade. The API turned out to be unprotected, structured and cheap to poll, so the crawler's cost collapsed and the argument is one-sided. Emails stay as a supplementary event stream, not the backbone. |
 | **No auto-buy for now** | Real money, no undo. Ranked shortlist + manual click captures ~95% of the value. Revisit later, maybe never. |
 | **Mass-favouriting is fine** | Ban risk was over-stated earlier and withdrawn — you're the revenue side. Real risk is *rate*: pace it (~100/day, not 5000/hour). |
@@ -509,20 +509,20 @@ Recorded so they don't get re-proposed. Some of these were argued out over sever
 ### Rejected
 
 - **Google reverse image search / Lens as the valuation engine.** No official API; Cloud Vision
-  Web Detection is the nearest legitimate thing and returns pages, not prices. Sellpy's photos
+  Web Detection is the nearest legitimate thing and returns pages, not prices. The marketplace's photos
   are their own studio shots so exact matches are near-zero; visually-similar returns "a black
   wool coat," which prices nothing. And it returns *asks*, not sales. Also: the brand is already
   in the listing — identification was never the bottleneck, price data is.
 - **"Find badly-described listings" as the primary strategy.** Proposed and rejected: needs
   human judgment, doesn't automate, doesn't scale. May survive as a secondary signal via a
-  vision model reading *Sellpy's own photos* for tags/model names on high-variance brands
+  vision model reading *the marketplace's own photos* for tags/model names on high-variance brands
   (e.g. Acne spans a 300 kr tee and a 3000 kr piece), but it is not the strategy.
 - **Browser-driven Lens lookups as a pipeline stage.** Seconds per item × thousands of items.
   Fine as a manual assist on a 10-item daily shortlist at the *end* of the funnel; not at the top.
 
 ### Open risk to test
 
-**Does favouriting affect the price decay?** Sellpy shows favourite counts publicly as social
+**Does favouriting affect the price decay?** The marketplace shows favourite counts publicly as social
 proof. If likes feed the discount algorithm or seller behaviour at all, mass-favouriting the
 items you want cheap is self-defeating — you'd prop up your own buy prices. Cheap test: favourite
 half a matched set, leave the other half, compare decay slopes over a few weeks. **Worth knowing
@@ -532,7 +532,7 @@ before favouriting thousands of items.**
 
 ## 5. Site reconnaissance — RESULTS (run 2026-08-04)
 
-Probe item: `https://www.sellpy.se/item/WZuo5jbEVe` (Nike practice jersey, 280 SEK, 19 favourites).
+Probe item: `$LOPPAN_MARKET_SITE/item/WZuo5jbEVe` (Nike practice jersey, 280 SEK, 19 favourites).
 
 ### Bot protection: none
 
@@ -556,17 +556,17 @@ the API, which is far richer.
 
 | Layer | Endpoint | Notes |
 |---|---|---|
-| **Parse Server** | `https://sellpy-parse-prod.herokuapp.com/parse` | Primary object store. Browser SDK keys (`applicationId`, `javascriptKey`) are in the bundle in plain text — they are public-by-design client keys, not leaked secrets. |
-| **GraphQL** | `https://sellpy-parse-prod.herokuapp.com/graphql` | Same host. Responds unauthenticated. **Introspection is disabled.** Serves `getTypesenseClientConfig`. |
+| **Parse Server** | `$LOPPAN_MARKET_API` | Primary object store. Browser SDK keys (`applicationId`, `javascriptKey`) are in the bundle in plain text — they are public-by-design client keys, not leaked secrets. |
+| **GraphQL** | `$LOPPAN_MARKET_GRAPHQL` | Same host. Responds unauthenticated. **Introspection is disabled.** Serves `getTypesenseClientConfig`. |
 | **Typesense** | config fetched via the GraphQL query above | The search index. **This is where price lives.** |
-| Firebase functions | `europe-west1-sellpy-1098.cloudfunctions.net` | Not investigated |
+| Firebase functions | _(redacted)_ | Not investigated |
 | Sanity CMS | `ilmr7lwv.apicdn.sanity.io` | Editorial content, irrelevant |
-| Images | `sellpy-parse-prod-files.s3.amazonaws.com` | Studio ("photoRobot") shots |
+| Images | see `$LOPPAN_MARKET_IMAGE_HOSTS` | Studio ("photoRobot") shots |
 
 ### Parse class `Item` is world-readable — but only by objectId
 
 ```bash
-curl -s -X POST "https://sellpy-parse-prod.herokuapp.com/parse/classes/Item/<objectId>" \
+curl -s -X POST "$LOPPAN_MARKET_API/classes/Item/<objectId>" \
   -H 'Content-Type: application/json' \
   -d '{"_method":"GET","_ApplicationId":"<appId>","_JavaScriptKey":"<jsKey>","_ClientVersion":"js4.3.1"}'
 ```
@@ -586,7 +586,7 @@ Far more than the UI renders. Real values from the probe item:
 
 | Field | Value | Why it matters |
 |---|---|---|
-| **`sellabilityEstimate`** | `{score: 0.792187095, isReliable: true, cutoff: 0.44, version: "3-mla"}` | **Sellpy's own per-item ML sell-probability, exposed.** See §5.1. |
+| **`sellabilityEstimate`** | `{score: 0.792187095, isReliable: true, cutoff: 0.44, version: "3-mla"}` | **The marketplace's own per-item ML sell-probability, exposed.** See §5.1. |
 | **`putOnShelfAt`** | `2026-06-16T13:43:29Z` | Exact ladder t₀ → precise days-on-shelf, not inferred |
 | `assortedAt` / `photographedAt` / `dateProcessed` / `createdAt` | all dated | Full intake pipeline; `assortedAt` (2026-05-18) precedes listing by a month |
 | `metadata` | `{size, color[], material[], brand, demography, pattern, countryOfOrigin, type, condition, productCode, sleeveLength}` | Fully structured. Duplicated into `metadata_en/de/da/fi/fr/nl/pl/cs/…` |
@@ -609,10 +609,10 @@ whose score sits well above its cutoff.
 
 What is **inferred** (label it as such; not yet verified):
 
-- **`score`** = Sellpy's modelled probability that the item sells. They have the ground truth to
+- **`score`** = the marketplace's modelled probability that the item sells. They have the ground truth to
   train this — millions of listed items and their outcomes — so it is almost certainly a
   well-calibrated in-house model, not a heuristic.
-- **`cutoff`** = the **accept/reject decision threshold applied at assortment time**. Sellpy does
+- **`cutoff`** = the **accept/reject decision threshold applied at assortment time**. The marketplace does
   not list everything sellers post in; items below the bar are rejected (donated/recycled/returned)
   because listing costs them photography, storage and handling. `score ≥ cutoff` → list it. The
   timeline supports this: `assortedAt` 2026-05-18 → `putOnShelfAt` 2026-06-16.
@@ -625,12 +625,12 @@ What is **inferred** (label it as such; not yet verified):
 **Why the cutoff being per-item is interesting.** It is stored *on the item*, not as a global
 constant — which implies it can vary. Plausibly by category, or by warehouse capacity / season
 (raise the bar when full). If it does vary, then **cutoff is itself a leading indicator**: a rising
-cutoff in a category means Sellpy is getting pickier there, which means supply glut, which is
+cutoff in a category means the marketplace is getting pickier there, which means supply glut, which is
 exactly when the buy side is cheap. That would be a free macro signal on the supply of your
 own inventory. Unverified — needs a sample across categories and time.
 
 **Why this matters more than anything else in this file.** §3 establishes that **sell-through is
-the binding constraint** and the hardest term in the buy rule. Sellpy computes `p(sell)` per item
+the binding constraint** and the hardest term in the buy rule. The marketplace computes `p(sell)` per item
 and hands it over for free, along with their own accept threshold. If their score predicts *your*
 Circle sell-through, the hard term in the buy rule is solved on day one.
 
@@ -657,7 +657,7 @@ Three properties, all confirmed against real items:
 
 1. **It is the complete ladder, retroactively.** Querying by item pointer returns every historical
    price step with `createdAt`/`endedAt` — the full decay curve of an item that sold months ago.
-   Filter `region: "SE"` or you get every market Sellpy operates in interleaved (a single step
+   Filter `region: "SE"` or you get every market the marketplace operates in interleaved (a single step
    returned 11 rows across currencies).
 2. **`first` / `latest` flags** give the opening ask and the clearing price directly, without
    reconstructing the sequence.
@@ -704,11 +704,11 @@ candidate filter is the same statement rearranged. The `0.84` is two different c
 number:
 
 1. **A fee.** You keep 84% of whatever you sell for. Real, unavoidable, independent of any model.
-2. **An assumption that the item sells *at Sellpy's estimate*.** Never tested. Cannot be tested
+2. **An assumption that the item sells *at the marketplace's estimate*.** Never tested. Cannot be tested
    retrospectively, per above.
 
 Claim 2 is doing most of the work and has no evidence behind it. The operator's objection is
-recorded here because it is correct and unrefuted: buyers cannot see the estimate, and if Sellpy's
+recorded here because it is correct and unrefuted: buyers cannot see the estimate, and if the marketplace's
 valuation is poor then the ratio is noise and the threshold means nothing. The counter-argument is
 narrower than it first appears — an estimate need only *predict* the sale price, not cause it, so
 invisibility is irrelevant — but prediction is precisely what is unmeasured.
@@ -721,7 +721,7 @@ Note the two hypotheses point opposite ways and nothing currently separates them
 
 **Evidence gathered while testing this, none of it conclusive:**
 
-- **Sellpy's sellability model rank-orders correctly.** On 250 resolved `item_ladders` rows:
+- **The marketplace's sellability model rank-orders correctly.** On 250 resolved `item_ladders` rows:
   score 0.40–0.60 → 69.6% actually sold; 0.60–0.80 → 85.6%; 0.80–0.98 → 89.7%. It is also
   systematically *conservative* — it under-predicts its own success rate. Caveat: 199 of 250 sold,
   far too high to be representative, so trust the ordering and not the levels. And this is the
@@ -729,7 +729,7 @@ Note the two hypotheses point opposite ways and nothing currently separates them
 - **Opening asks are far above clearing prices.** Across 1,747 resolved items, the median sold item
   kept only **58.3%** of its opening ask, and 41% of them sold at more than half off. Items that
   never sold had been marked down to 40.9% and sat a median of 161 days. This is consistent with a
-  deliberate Dutch auction rather than incompetence, so it does **not** establish that Sellpy prices
+  deliberate Dutch auction rather than incompetence, so it does **not** establish that the marketplace prices
   badly — but it does mean the opening ask is a starting bid, not a valuation.
 - **The estimate tracks the current ask closely** (median `price_to_estimate` = 1.105 across the
   live catalogue). An estimate that follows the ask that tightly may be partly derivative of it,
@@ -883,7 +883,7 @@ cohort has a frozen selection.
   `version: "3"` on 2024–25 items and `"3-mla"` on a 2026 item, so the model has already rolled
   at least once — confirming the §5.1 warning that scores must be keyed by version.
 - Check whether `traderaCategoryId` means items are cross-listed on Tradera. Two of the three
-  traded items carry one. If Sellpy dual-lists, Tradera is a second, independent price signal —
+  traded items carry one. If the marketplace dual-lists, Tradera is a second, independent price signal —
   and possibly a second exit.
 
 ---
@@ -893,7 +893,7 @@ cohort has a frozen selection.
 Collection layer only. Nothing here depends on solving valuation first.
 
 ```
-items                sellpy_id (PK, char(10))
+items                market_id (PK, char(10))
                      brand_id, category_id, type_id      ← FK to small dims, NOT text
                      size, color, material, pattern, demography, condition, country_of_origin
                      product_code, weight_g
@@ -911,9 +911,9 @@ dim_type                                                            (Kläder > S
 price_observations   item_id, price int, currency, region,
                      started_at, ended_at, is_first, is_latest, offer_id
                      ← MIRRORS `MarketOffer` (§5.2). NOT a polling artefact: each row is a real
-                       price step Sellpy already recorded, backfillable retroactively. Filter
+                       price step the marketplace already recorded, backfillable retroactively. Filter
                        region='SE'. Naming it "observations" is now a slight misnomer — these are
-                       Sellpy's own ladder rows, not our samples. Poll only for new/changed items.
+                       the marketplace's own ladder rows, not our samples. Poll only for new/changed items.
 
 outcomes             item_id, terminal_event ('sold'|'floor'|'vanished'), final_price, at
                      ← largely derivable rather than inferred: `itemStatus='betald'` marks a sale,
@@ -929,7 +929,7 @@ Notes forced by the recon:
 - **Do not store `raw_json`.** The API returns 6,805 B per item, of which 3,044 B is the same
   metadata repeated in ~10 languages. Locale-stripped it is 3,761 B; the genuinely useful subset
   is **1,337 B**. Typed columns are ~260 B. Keeping raw JSON costs 5–10× for zero analytic gain.
-- **Normalise brand/category/type to dims.** Sellpy's own taxonomy is already a tree with stable
+- **Normalise brand/category/type to dims.** The marketplace's own taxonomy is already a tree with stable
   objectIds, and `ItemCategory`/`ItemType` are readable — mirror it once, join by smallint.
   This is a straight conformed-dimension play (Kimball ch. 2): a handful of dim rows against
   hundreds of thousands of fact rows.
@@ -985,7 +985,7 @@ is the precedent).
    table is disposable substrate.
 
 **Practical sizing:** at ~260k concurrently-tracked live items you are nowhere near constrained by
-Sellpy's catalogue being larger than that — you are constrained by §9 question 1, *which brands and
+the marketplace's catalogue being larger than that — you are constrained by §9 question 1, *which brands and
 categories are you actually trading*. Storage does not force scoping; scoping is a strategy
 decision that happens to also solve storage.
 
@@ -1011,7 +1011,7 @@ Separate Supabase project, separate repo.
 
 ## 8. Risks and obligations
 
-- **ToS.** Crawling and automation very likely breach Sellpy's terms. Practical risk is low at
+- **ToS.** Crawling and automation very likely breach the marketplace's terms. Practical risk is low at
   modest rates for personal use, but the downside isn't "the scraper breaks" — it's losing the
   account you need for Circle. One account, slow, unglamorous.
 - **The absence of bot protection is not permission.** §5 found no Cloudflare and a world-readable
@@ -1048,7 +1048,7 @@ Separate Supabase project, separate repo.
 
 §5 recon is done and §6 is now written against the real schema. What's left, in order:
 
-0. **Recover the denominator.** Go back through the Sellpy purchase history and count every item
+0. **Recover the denominator.** Go back through the marketplace purchase history and count every item
    bought with intent to resell, including the ones still unsold. Three wins are already recorded
    (§3.5); what is missing is how many buys produced them. **Sell-through is the binding constraint
    (§3), it is currently unestimated, and no amount of crawler work substitutes for this number.**
@@ -1107,13 +1107,13 @@ Start at ~50 per band. **This is a starting point, not a limit** — see "scale"
    entry* — expected multiple, expected days to sell. An unrecorded prediction is unfalsifiable.
 4. **Follow items to the end, including the boring ones.** The items that quietly expire are the
    sell-through denominator, and they are the entire point.
-5. **Track Circle listings as a separate cohort.** Sellpy's own clearing prices and Circle clearing
+5. **Track Circle listings as a separate cohort.** The marketplace's own clearing prices and Circle clearing
    prices are different markets; the whole strategy rests on the gap between them. Circle listings
    are the same Parse class with `p2pValueShare` set, so they are trackable the same way.
 
 ### Scale: poll, don't favourite
 
-The natural instinct is to favourite items and let Sellpy's price-drop and sold emails do the
+The natural instinct is to favourite items and let the marketplace's price-drop and sold emails do the
 reporting. **Polling `MarketOffer` directly is better on every axis:**
 
 - **No 150-item ceiling.** Polling scales to thousands for the same effort. The statistics improve
@@ -1124,7 +1124,7 @@ reporting. **Polling `MarketOffer` directly is better on every axis:**
   proof, so mass-favouriting the items you intend to buy cheaply could prop up their prices — you'd
   be bidding against yourself. Polling is passive and cannot contaminate the experiment.
 - **Emails as a supplement, not the mechanism.** Favourite a handful deliberately, to learn what
-  Sellpy's notifications actually contain and how fast they fire. That is worth knowing. It is not
+  the marketplace's notifications actually contain and how fast they fire. That is worth knowing. It is not
   worth building the study on.
 
 ### On the account
@@ -1159,8 +1159,8 @@ That settles Idea 1 vs Idea 2 vs Idea 4 with data instead of four anecdotes, in 
 
 ### The limitation that must not be forgotten
 
-This measures **what items cleared for on Sellpy**, not what they would have fetched **on Circle**.
-The 5× returns came from reselling *above* Sellpy's own price, and the backtest cannot see that.
+This measures **what items cleared for on the marketplace**, not what they would have fetched **on Circle**.
+The 5× returns came from reselling *above* the marketplace's own price, and the backtest cannot see that.
 
 So it validates the *detector* — "can I identify items priced below what they're worth?" — but not
 the resale premium. **Unless Circle listings turn out to be enumerable**, in which case Circle

@@ -27,9 +27,8 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-# The Parse client. On this branch it is still sellpy.py; an unmerged branch renames
-# it market.py, and then this is the one line in the BigQuery path that changes.
-from loppan import sellpy as parse
+# The Parse client. Its endpoints come from the environment (see endpoints.py).
+from loppan import market as parse
 
 ADJUDICATE = 60      # MarketOffer $in ceiling, verified
 

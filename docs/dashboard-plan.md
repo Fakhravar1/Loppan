@@ -12,7 +12,7 @@ the v2 rehaul.
 > was **3.0 s** against a ~3 s timeout until the results were stored, then **4.9 ms**.
 >
 > It also settled one thing this document assumed was available. Screen 3 was meant to
-> replace Sellpy's value estimate — but `price_to_estimate` is now **null on all 671,075
+> replace the marketplace's value estimate — but `price_to_estimate` is now **null on all 671,075
 > live items**, so the shortlist can only say *cheap against live peers*, never *cheap
 > against worth*. The peer comparison is not a stand-in for value; it is a different
 > question that happens to be answerable.
@@ -97,7 +97,7 @@ individual rates predict — e.g. does *wool × out-of-season* beat wool alone.
 
 ### 3 · Relative pricing — *"is this cheap for what it is?"*
 
-**This is the most valuable screen, because it is the empirical replacement for Sellpy's
+**This is the most valuable screen, because it is the empirical replacement for the marketplace's
 value estimate** — the number §5.3 records as untestable and only present on 5% of items.
 
 For each live item, find its peers and place it among them:
@@ -117,7 +117,7 @@ Then store, per item:
 - `peer_level` — which fallback tier was used
 
 A cheap item is then simply one with a low `peer_price_pct` and a large `peer_n`. That's
-a buy signal built entirely from observed prices, with no dependence on Sellpy's model.
+a buy signal built entirely from observed prices, with no dependence on the marketplace's model.
 
 **The natural next step, once outcomes accumulate:** replace *asking* peers with *sold*
 peers — `peer_sold_median` — so the comparison becomes "what do these actually clear

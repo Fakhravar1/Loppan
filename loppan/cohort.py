@@ -32,7 +32,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from loppan import db, search, sellpy
+from loppan import db, market, search
 from loppan.outcomes import STATUS_OUTCOME  # also read by others as cohort.STATUS_OUTCOME
 
 DATA = pathlib.Path(__file__).resolve().parent.parent / "data"
@@ -247,7 +247,7 @@ def check() -> None:
             out["outcome"] = "still_listed"
         else:
             try:
-                item = sellpy.item(row["item_id"])
+                item = market.item(row["item_id"])
                 status = item.get("itemStatus")
                 out["status"] = status
                 # 'såld' is sold with payout pending; 'betald' is sold and paid
@@ -258,7 +258,7 @@ def check() -> None:
                 # "Sold at 200 kr" and "sold at 200 kr after four price cuts"
                 # mean opposite things, and this is the last moment the path is
                 # readable.
-                out.update(_path(sellpy.ladder(row["item_id"])))
+                out.update(_path(market.ladder(row["item_id"])))
             except Exception as exc:
                 out["outcome"] = f"error:{type(exc).__name__}"
         results.append(out)

@@ -453,11 +453,14 @@ to undo it.
 The box died again overnight and was power-cycled at 07:33 CEST. **The cause is not
 known**, and that is the finding rather than a gap in this document.
 
-> ⚠️ **Superseded 2026-08-13: the cause is now known, and it was the SD card.** The same
-> failure recurred on bucket 3 and was traced to `Runner.Listener` taking SIGBUS on
-> unreadable sectors. **"The SD card is healthy" below is false** — `/var/crash` holds
-> dumps from 08-11, predating this entry. See "The fourth crash" below; the paragraph is
-> kept because the reasoning that produced a wrong conclusion is worth seeing.
+> ⚠️ **This paragraph was superseded on 2026-08-13 and then un-superseded the same day.
+> The cause of the third crash is still not known.** The retraction said the cause was
+> the SD card and that "the SD card is healthy" below was false. Both of those were
+> wrong, and the sentence they attacked was right: there is **not one SD I/O error in
+> the retained log history before 2026-08-13** — `/var/log/syslog*` and `kern.log*` go
+> back to 2026-02-10 and every one of the 350 errors falls on 08-13. The `/var/crash`
+> dumps cited as proof are Python *exception* reports, not signal deaths. See "The fifth
+> crash" for the evidence and for how the wrong retraction was built.
 
 What was ruled out, all measured rather than assumed: the SD card is healthy and the
 filesystem came up clean (no recovery, no orphan inodes), the SoC was at 64.7 °C with no
@@ -504,11 +507,15 @@ bad case, ~299 MB against a ~495 MB build, has still never been seen.
 length overlaps it regardless of how often the sweep runs. Changing pool frequency does
 not avoid contention, it only changes how often Loppan is the one contending.
 
-## The fourth crash — 2026-08-13 — the SD card, and it explains the third
+## The fourth crash — 2026-08-13 01:20 UTC — SIGBUS off the SD path
 
-**The cause of the third crash is no longer unknown.** It was the SD card, and the
-section above says the opposite in two places. Both are corrected below rather than
-edited out, because the reasoning that produced them is the point.
+> ⚠️ **This section was written as "the SD card, and it explains the third". It does not
+> explain the third, and the media is not failing.** What is measured here — SIGBUS, the
+> sector range, the `mmc0` lines — is real and stands. The inferences drawn from it were
+> wrong, and are corrected in place below and in "The fifth crash". The original claims
+> are kept, struck through in words rather than deleted, because this is the second time
+> in three days that a plausible reading of real evidence sent the diagnosis sideways,
+> and that pattern is the more useful thing to record.
 
 ### What happened
 
@@ -533,27 +540,41 @@ on an mmap'd file whose backing blocks cannot be read.
 **109** `I/O error, dev mmcblk0` on a contiguous range, sectors 22902312–22902496 —
 about 92 KB, inside `mmcblk0p2` (root), not the boot partition.
 
-### Why this explains 08-12, and 08-11
+### ~~Why this explains 08-12, and 08-11~~ — it explains neither
 
-`/var/crash` held the trail the journal could not (no RTC — see above):
+`/var/crash` was read as the trail the journal could not give (no RTC — see above), and
+every dump in it was attributed to the card:
 
-| Crash dump | Local (CEST) | UTC | Previously blamed on |
+| Crash dump | Local (CEST) | What it *actually* is | |
 |---|---|---|---|
-| `pool_refresh.py` | Aug 11 12:45 | 10:45 | — |
-| `shortlist.py` | Aug 11 18:32 | 16:32 | the four failed `track` dispatches |
-| `sweep_pool.py` | Aug 12 01:13 | 23:13 Aug 11 | `ssl.SSLEOFError`, "the tunnel" |
-| `Runner.Listener` + `.Worker` | Aug 13 03:20 | 01:20 | — |
+| `analytics.py` | Aug 11 07:55 | Python traceback — no `Signal:` field | not the card |
+| `pool_refresh.py` | Aug 11 12:45 | `RuntimeError: HTTP 400 — 23502` not-null violation on `shortlist_daily` | not the card |
+| `shortlist.py` | Aug 11 18:32 | `RuntimeError: HTTP 400 — 42P10` no unique constraint matching `ON CONFLICT` | not the card |
+| `sweep_pool.py` | Aug 12 01:13 | `ssl.SSLEOFError` | not the card |
+| `Runner.Listener` + `.Worker` | Aug 13 03:20 | **`Signal: 7` — SIGBUS** | this section |
+| `udevadm` | Aug 13 03:24 | `Signal: 6` — SIGABRT | collateral |
 
-⚠️ **Two claims above are now known to be wrong.** "The SD card is healthy" was believed
-on 08-12 and was already false — the card had been producing crash dumps since 08-11.
-And the failures from 08-11 onward were attributed to memory and to TLS; at least three
-of them were this. The 08-07 and 08-10 livelocks had genuine measured memory evidence
-and still stand — **this does not retract those** — but everything after 08-11 should be
-re-read with a failing card in mind.
+⚠️ **The reasoning that produced the wrong answer, since it will be tempting again.** A
+directory of crash dumps was found while looking for a hardware fault, the timestamps
+spanned the bad days, and the file *names* were the scripts that had been failing — so
+the pile was read as one story. Nobody opened them. An apport report for a Python
+process carries a `Traceback:` and **no `Signal:` field at all**; only two of the seven
+here were killed by a signal. One `grep` would have separated them:
 
-⚠️ **`BlobNotFound` on a job's logs is a hardware signal, not a GitHub glitch.** A job
-that fails uploads its log. A job whose *runner* dies cannot. Check it first, before
-theorising about the workload:
+```bash
+for f in /var/crash/*.crash; do echo "$f: $(sudo grep -m1 '^Signal:' "$f" || echo 'no signal — exception report')"; done
+```
+
+⚠️ **So the earlier diagnoses were right and the retraction was wrong.** `ssl.SSLEOFError`
+and the two PostgREST `400`s were correctly diagnosed when they happened, and the 08-13
+entry retracted them for no reason. The 08-07 and 08-10 livelocks had genuine measured
+memory evidence and were never in doubt. **Nothing before 2026-08-13 is explained by the
+SD path** — there is no I/O error in the logs before that date.
+
+⚠️ **`BlobNotFound` on a job's logs means the runner process died — not necessarily
+hardware.** A job that fails uploads its log; a job whose *runner* dies cannot. It is
+worth checking first, but it narrows the cause to "the runner went away", which includes
+SIGBUS, OOM, a livelock and a power cut alike:
 
 ```bash
 gh api repos/:owner/:repo/actions/jobs/<job-id>/logs
@@ -583,23 +604,262 @@ dying media — `Got data interrupt ... even though no data operation was in pro
 a known Pi SDHCI quirk, and 2 of them is background where 351 was not. The honest state
 is *currently error-free under a read of exactly what was failing*.
 
+> ✅ **That caveat was the one thing in this section that held.** The repair did not last:
+> the first job after it failed identically 35 minutes later. And the second guess in it —
+> "controller/timing-level rather than dying media" — is what the evidence now supports.
+> The "read every file end to end, zero errors" test passes *whenever the box is quiet*
+> and proves nothing; it passed again on 08-13 after the fault had already returned. See
+> "The fifth crash".
+
 **The load during the incident was not Loppan's.** It was the sibling's `dbt build`, and
 the Loppan cgroup sat at 29.5 MB against a 300 MB `MemoryHigh`. Do not reach for the
 memory ceiling for this failure mode — it is the wrong instrument and it cost a day here.
 
 ### Watching for the return
 
-Cheap, and the only two that matter:
-
 ```bash
 sudo dmesg -T | grep -c "I/O error"
 journalctl -u 'actions.runner.Fakhravar1-Loppan.qvitta-pi.service' | grep -c 'error code null'
 ```
 
-Zero and stable is fine. Either one climbing means it is back, and then the card is
-genuinely finished. **Move root to a USB SSD** — three incidents in a week on a box
-Loppan now depends on is enough, and it retires this whole failure class rather than
-waiting for the next power cycle to postpone it again.
+⚠️ **The second command is not a health check and nearly hid the fifth crash.** It only
+fires when the *Listener* is the process that dies. On 08-13 at 11:14 the Listener was
+fine and the **Worker** took the SIGBUS: `error code null` stayed at **0** through a
+failed job. Use the first command, and this, which catches either:
+
+```bash
+sudo dmesg -T | grep -cE "I/O error|Got data interrupt"
+grep -c "exit code 135" /opt/actions-runner-loppan/_diag/Runner_*.log
+```
+
+> ⚠️ **Both of these read 0 through the three-day outage of 08-14, correctly.** They
+> detect the SD path, and 08-14 was the cgroup. Nothing here — and nothing else on the
+> box, including the health-check cron — can tell you the runner has stopped talking to
+> GitHub. For that, and it is the one check that has never been wrong:
+>
+> ```bash
+> gh api repos/Fakhravar1/Loppan/actions/runners --jq '.runners[] | "\(.name) \(.status)"'
+> ```
+>
+> See "The sixth outage" below.
+
+## The fifth crash — 2026-08-13 11:14 UTC — the host controller, not the media
+
+The first job after the repair above failed the same way, 35 minutes after the runner
+was re-enabled. That forced the diagnosis to be rebuilt from evidence instead of
+inherited, and it came out differently. **The card's stored data is intact, the media is
+not failing, and the failure is in the SD host-controller path.**
+
+### What happened
+
+Run `31694612725`, `sweep` job on `qvitta-pi`, scheduled 11:14 UTC. All times UTC.
+
+| | |
+|---|---|
+| 11:14:33 | Listener spawns Worker pid 83065 |
+| 11:14:59 | first `I/O error, dev mmcblk0, sector 22903448 op 0x0:(READ) flags 0x80700 phys_seg 9` |
+| 11:15–11:17 | six more, sectors 22903208–22903416; `psi_io_some` **96.6 → 98.9 %**, load 8.39 |
+| 11:17:53 | `Finished process 83065 with exit code 135` |
+| 11:17:54 | job result `Failed` |
+
+`135` is `128 + 7` — SIGBUS, on the **Worker**. The Listener survived, which is why
+`error code null` is 0 and why the runbook's second watch command said nothing was wrong.
+
+No `Worker_*.log` was ever created and `_work/Loppan/Loppan` has not been touched since
+08-12. **No step ran: no checkout, no Python, no Algolia, no Supabase.** Everything at or
+above the workflow is therefore excluded by construction, not by argument.
+
+### What was excluded, and how
+
+Every one of these was checked on the box rather than reasoned about:
+
+| Hypothesis | Verdict | Evidence |
+|---|---|---|
+| Memory / cgroup livelock | out | Loppan cgroup `high 0 max 0 oom 0 oom_kill 0` for the whole boot; 116–120 MB against a 300 MB `MemoryHigh`; `MemAvailable` 542 MB throughout |
+| Under-voltage / PSU | out | `vcgencmd get_throttled` → `0x0`, no under-voltage line in `dmesg` |
+| Thermal | out | 63 °C, no throttling |
+| Disk full | out | 22 % space, 8 % inodes |
+| Filesystem corruption | out | ext4 `clean`, no error count, rw, never remounted ro |
+| Runner self-update swapping a mapped binary | out | no `SelfUpdate*` logs, no `_work/_update`, `libcoreclr.so` mtime is the release date |
+| Orphaned / duplicate runner | out | the second `Runner.Listener` is the **sibling's**, started at boot |
+| VPN netns / tunnel | out | netns active, wg peer up, DNS resolves inside it |
+| dbt contention | out | sibling idle (~300 MB) through the window; its build started 11:18, *after* the failure |
+| Kernel regression (1047 → 1060) | out | upgraded 2026-08-04, then nine days with zero I/O errors |
+| Bus / connector / signal integrity | out | **0** CRC errors, **0** timeouts, **0** tuning failures, **0** retries, **0** controller resets; card at a standard DDR50 50 MHz, not overclocked |
+| Loppan application code | out | never executed (above) |
+
+### What killed the media theory
+
+Four measurements, none of which a failing card survives:
+
+- **The "bad" sectors read fine.** `dd iflag=direct` (page cache bypassed) on 22903400
+  and 22903416 returns 4096 bytes in milliseconds, no error, and provokes no new dmesg
+  line.
+- **The data is intact.** `md5sum` of `/opt/actions-runner-loppan/bin/libcoreclr.so` is
+  `fc895b57f963800c63ea6a9276f179e7` — **byte-identical** to the sibling runner's
+  independent copy at `/opt/actions-runner/bin/libcoreclr.so`.
+- **350 of 350 errors are `op 0x0:(READ)`. Zero write errors**, ever.
+- **The card has never reported a failure.** Not one `mmc0: req failed`, no CRC
+  (`-84`), no timeout (`-110`), no `-5`, in the entire retained history.
+
+Extent, for the record: 20 distinct sectors spanning 22901904–22903456 — 776 KB — and
+`debugfs` maps **all twenty** to one inode:
+
+```bash
+start=$(cat /sys/class/block/mmcblk0p2/start)          # 1050624
+blk=$(( (SECTOR - start) / 8 ))                        # 4K fs blocks
+sudo debugfs -R "icheck $blk" /dev/mmcblk0p2           # block -> inode
+sudo debugfs -R "ncheck $INODE" /dev/mmcblk0p2         # inode -> path
+#   411202  /opt/actions-runner-loppan/bin/libcoreclr.so
+```
+
+### The mechanism
+
+```
+mmc0: Got data interrupt 0x00000002 even though no data operation was in progress.   03:10:45
+  ... repeated, ~8.3 s apart ...
+I/O error, dev mmcblk0, sector 22902232 op 0x0:(READ) flags 0x80700 phys_seg 32      03:11:13
+```
+
+The host controller takes a spurious DATA interrupt with no data command in flight. The
+driver's recovery cycle fires every ~8.3 s and never clears it, so the read never
+completes, and after ~25 s the **block layer synthesises `EIO` for a request the card
+never failed**. That `EIO` lands on a demand-paged page of an mmap'd executable, which is
+SIGBUS by definition, and the .NET process dies with 135.
+
+The errors cluster in one file because the victim is whatever request is in flight when
+the controller wedges — and during .NET startup that is always the same large readahead
+(`phys_seg 30/32`) of the same file at the same offsets. It is not a bad region; it is a
+fixed access pattern meeting an intermittent fault.
+
+### Why Loppan and never Qvitta, on the same card — hypothesis, not measurement
+
+Both runners are the same runner build and mmap byte-identical copies of the same
+library off the same card. Only Loppan has ever crashed. The likeliest reason is cache
+residency: the sibling runs **every 15 minutes** under a roomier cap, so its copy stays
+warm and is rarely read off the card at all; Loppan runs **every 2 hours** under 300 MB,
+so its copy is evicted between runs and is re-read cold on every job start. Loppan would
+then be the only workload issuing those big cold readaheads, and so the only one exposed.
+
+**This is not measured** — page-cache residency was not sampled per file. It is written
+down because it predicts something cheap and testable: keeping the runner tree resident
+should make the failure stop without touching the hardware at all.
+
+### What to do, cheapest first
+
+1. **Reseat the card and clean the contacts** — done 2026-08-13, ~14:40 CEST. Costs
+   nothing and addresses the contact-level end of a signalling fault. Verify by whether a
+   sweep survives, not by reading files while the box is quiet.
+2. **Drop the card out of DDR50.** `dtparam=sd_overclock` / forcing SDR50 in
+   `/boot/firmware/config.txt` sidesteps the quirk at a modest throughput cost.
+3. **Raise Loppan's `MemoryHigh`** so the runner tree stays cached between runs — tests
+   the hypothesis above and, if right, removes the trigger.
+4. **Move root to a USB SSD.** Still the right answer, but note the reason has changed:
+   it is worth doing because it retires the whole SD path — card, socket *and*
+   controller — not because the card is worn out. **A fresh SD card may not fix this**,
+   which is exactly what the old reasoning would have predicted it would.
+
+⚠️ **Do not spend another day on the memory ceiling for this.** Twice now the cgroup has
+been the first place looked and twice it was innocent; on 08-13 it recorded literally
+zero throttle events across a boot containing a failed job.
+
+> ⚠️ **This warning is correct for crashes 4 and 5 and wrong as a general rule.** On
+> 08-14 the cgroup was the cause, and the trail measured it: 4.5 million `memory.high`
+> throttle events and `psi_mem_full` above 90 % for a day. Kept because the reasoning
+> still holds where it was aimed — *the SD-path crashes were not the ceiling* — but read
+> it as "not this failure", not "never the ceiling". See "The sixth outage" below.
+
+## The sixth outage — 2026-08-14 09:32 UTC — the second livelock, in the band between High and Max
+
+**The first outage that cost real money, the first that no check on the box detected,
+and a recurrence of 08-10 rather than anything new.** It is also the first one where
+the SD path was measurably innocent.
+
+### What it cost
+
+The runner went quiet at 09:32 UTC on 08-14 and was not noticed until 08-17. `route`
+did its job and fell back to hosted every two hours for three days — but Loppan is a
+**private** repo, so hosted minutes bill. `pool sweep` spent **522 of the 834 hosted
+minutes** used 08-04..17, running ~150 min/day (142 on the 15th, 159 on the 16th)
+against a 2,000 min/month pool shared with every repo on the account.
+
+### What happened, from the trail
+
+| time (UTC) | what the trail shows |
+|---|---|
+| 09:30:34 | sibling `dbt` spikes, `qvi_mb` 272 → **449**; `MemAvailable` 547 → 362 |
+| 09:31:08 | runner logs `Running job: sweep` — **the last line it ever wrote** |
+| 09:32:03 | `lop_mb` 290 and climbing to the cap; swap 306 MB |
+| 09:32 → 10:20 | `lop_mb` pinned **300–302**, `psi_io_some` **55–85 %**, `lop_high` climbing ~5,000 every 30 s |
+| 10:25 → | `psi_mem_full` jumps to **70–98 %** and stays there; `load1` ~9 |
+| 08-15 10:58 | last sample with `psi_mem_full > 50` — **~25 hours** of it |
+| 08-15 11:14:30 | GitHub cancels the sweep queued at 08-14T11:12:28Z, 24 h 2 min after queueing |
+
+`lop_high` went from 39,779,082 to 44,312,977 — **4.5 million throttle events**. The
+cgroup peaked around **333 MB**: above `MemoryHigh=300M`, below `MemoryMax=400M`.
+
+**That band is the whole failure.** Under `MemoryHigh` the cgroup runs. Over
+`MemoryMax` it gets OOM-killed, the job fails, and `route` sends the next sweep
+elsewhere — loud, fast, cheap. *Between* them it is throttled and reclaimed forever
+without ever dying, which is a livelock with no error, no exit code and no corpse. The
+sweep sat in that band for a day. `memory.conf` already says "a cgroup parked at
+`MemoryHigh` reclaims continuously; headroom under it is the property being bought" —
+on 08-14 it got parked there anyway, because the sibling took the headroom first.
+
+### Why nothing on the box caught it
+
+Every detector built after crashes 3–5 was looking somewhere else. All three were clean
+**and all three were right to be** — this was not their failure mode:
+
+| check | reading | why it missed |
+|---|---|---|
+| `dmesg \| grep -cE "I/O error\|Got data interrupt"` | **0** | no SD fault occurred |
+| `grep -c "exit code 135" _diag/Runner_*.log` | **0** in every log but 08-13's | nothing took a SIGBUS |
+| health-check cron → hc-ping.com | **green throughout** | see below |
+
+The health check is the one worth fixing:
+
+```
+systemctl is-active --quiet actions.runner.Fakhravar1-Loppan.qvitta-pi.service \
+  && /usr/local/sbin/loppan-tunnel-ok && curl -fsS ... hc-ping.com/f04a571b-...
+```
+
+⚠️ **`systemctl is-active` cannot detect this and never could.** `runsvc.sh` is the
+unit's `MainPID`, nothing killed it, so the unit stayed `active (running)` for three
+days while the Listener underneath it was too starved to hold its connection to GitHub.
+The same `MainPID`-survives property was already the whole diagnosis of crash 4 — there
+it hid a dying Listener, here it hid a throttled one. **A green tunnel and a green unit
+together still mean nothing about whether GitHub can see the runner.** The only check
+that would have caught this is the one the `route` job already makes:
+
+```bash
+gh api repos/Fakhravar1/Loppan/actions/runners --jq '.runners[] | "\(.name) \(.status)"'
+```
+
+### What fixed it
+
+`sudo systemctl restart` — nothing more. Online in seconds, no reboot, no card touched.
+Uptime shows the box itself never went down.
+
+⚠️ **`journalctl --list-boots` reports this boot starting 07-28. It did not** — that is
+the no-RTC artifact described above, `fixrtc` stamping pre-NTP entries with a stale
+clock. `/proc/uptime` is monotonic and is the only boot clock on this box worth
+believing.
+
+### What to do about it
+
+1. **Watch runner reachability from GitHub's side, not the box's.** Every on-box signal
+   was green through a three-day outage. This is the gap.
+2. **Consider narrowing the High↔Max band**, or dropping `MemoryHigh` toward `MemoryMax`
+   for the sweep. A killed job is recoverable in one cron cycle; a throttled one is
+   invisible for three days and bills for all of them. The band exists to buy headroom,
+   and this outage is the bill for that choice.
+3. **The `route` cost gate (added 08-17) is the backstop that makes any recurrence
+   cheap** — four 6-hourly hosted slots instead of twelve, ~40 min/day instead of ~150.
+   It does not prevent the outage; it caps what an unnoticed one costs.
+4. **Revisit the oversubscription below.** The trigger was the sibling's `dbt` taking
+   the headroom at the moment a sweep started. That is the exact collision "The two
+   ceilings deliberately oversubscribe the box" accepts as a known risk.
 
 ## The sibling's runner is capped too (2026-08-08)
 
@@ -676,9 +936,9 @@ anything.
   exists. If you ever bypass it by hardcoding `runs-on: qvitta-pi`, you are back to
   a dead Pi meaning a silently skipped pass with no alert.
 - **`enrol` and `cohort-check` stay hosted, deliberately.** They are ~90 min/month
-  between them and moving them adds Sellpy-from-home-IP exposure for little saving.
+  between them and moving them adds the marketplace-from-home-IP exposure for little saving.
 - **The crawl would originate from a home residential IP** — the same household as
-  the owner's Sellpy account, which the README's ground rules care about ("the risk
+  the owner's the marketplace account, which the README's ground rules care about ("the risk
   that matters is the account, not the scraper"). Accepted as a trade for a
   read-only 1 req/s crawl during a measurement-only phase. A NordVPN tunnel on the
   Pi was considered and rejected: it inserts a new failure domain into the path
@@ -722,6 +982,26 @@ The saving is smaller than the first draft of this document claimed (~400 min/mo
 not ~990) but it is drawn from an account-wide pool that several projects share,
 which is what makes it worth claiming.
 
-One manual step stands between this and the Pi actually being used: creating
-`RUNNER_STATUS_TOKEN`, without which the router cannot see the Pi and routes hosted
-every time. Until that exists, everything here is built and proven but idle.
+⚠️ **The paragraph that stood here — "one manual step stands between this and the Pi
+actually being used: creating `RUNNER_STATUS_TOKEN`" — has been stale since 2026-08-10.**
+The token was created that day, which is precisely what started sending real jobs to the
+box and set off the second livelock. It is recorded in "What set it off" above; the
+summary was never updated to match. Corrected 2026-08-13.
+
+The last lesson is about diagnosis rather than memory. Four of the six failures were
+first blamed on the wrong thing, and on 08-13 a *correction* was itself wrong in both
+directions at once: it retracted three accurate diagnoses (`SSLEOFError`, two PostgREST
+`400`s) and it declared a failing card that measurement does not support. Both mistakes
+came from the same move — reading a pile of evidence as one story without opening the
+individual pieces. The habit worth keeping is the one the memory work already taught:
+**open the artifact and read the number before building an argument on it.** A crash
+dump has a `Signal:` field or it does not; a card that is failing reports errors, and
+this one never has.
+
+08-14 added the counterpart to that habit. Every on-box check was green — `dmesg` clean,
+`exit code 135` at zero, the health-check cron pinging happily — and every one of them
+was *correct*, because none of them was watching the thing that failed. Three days and
+522 billed minutes went by on that. **A green check is only evidence about what it
+measures**, and after five SD-shaped crashes every check on this box was SD-shaped. The
+one signal that was never wrong all week came from outside: whether GitHub itself could
+see the runner. Prefer the check that sits where the consequence lands.

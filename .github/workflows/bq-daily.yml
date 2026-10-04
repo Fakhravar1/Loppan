@@ -58,6 +58,12 @@ concurrency:
 env:
   PUSH_MODE: export   # the mode a push to bigquery-daily runs
   PUSH_ORIGINS_MAX: "6000"   # ~3.3 h of serial Parse calls, inside the 330 min limit (2nd batch)
+  # Marketplace endpoints: public values kept out of the repository so the source
+  # does not name the target (loppan/endpoints.py). Repository VARIABLES, not secrets.
+  LOPPAN_MARKET_API: ${{ vars.LOPPAN_MARKET_API }}
+  LOPPAN_MARKET_GRAPHQL: ${{ vars.LOPPAN_MARKET_GRAPHQL }}
+  LOPPAN_MARKET_SITE: ${{ vars.LOPPAN_MARKET_SITE }}
+  LOPPAN_MARKET_IMAGE_HOSTS: ${{ vars.LOPPAN_MARKET_IMAGE_HOSTS }}
 
 jobs:
   run:

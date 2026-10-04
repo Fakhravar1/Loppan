@@ -4,21 +4,21 @@ Orientation document. Read this first; `handover.md` has the evidence and the ar
 `api-notes.md` has the mechanics.
 
 **Status as of 2026-08-06: measurement only.** Nothing here buys anything, automates a
-purchase, or writes to Sellpy. The purpose is to find out whether a business exists before
+purchase, or writes to the marketplace. The purpose is to find out whether a business exists before
 committing money to it.
 
 ---
 
 ## 1. The idea
 
-Sellpy sells second-hand clothing two ways, and the two halves behave differently.
+The marketplace sells second-hand clothing two ways, and the two halves behave differently.
 
-**Consignment.** You post items in a bag, Sellpy photographs, prices and lists them. The
+**Consignment.** You post items in a bag, the marketplace photographs, prices and lists them. The
 price then walks *downwards* automatically on a markdown ladder until the item sells or
 reaches end-of-life. The seller does not control the price and cannot stop the clock.
 
 **Circle.** A private seller lists an item they own, at a price they choose. No automatic
-markdown. They keep 80% of the sale, or 84% if the payout is taken as Sellpy credit.
+markdown. They keep 80% of the sale, or 84% if the payout is taken as the marketplace credit.
 
 The asymmetry that follows from those published terms:
 
@@ -70,7 +70,7 @@ independently verified:
 |---|---|---|
 | Circle payout as cash | 0.800 | 20.0% |
 | Cash, next purchase on Amex (1.35% cashback) | 0.811 | 18.9% |
-| **Circle payout as Sellpy credit (+5%)** | **0.840** | **16.0%** |
+| **Circle payout as the marketplace credit (+5%)** | **0.840** | **16.0%** |
 
 Taking the payout as credit beats cash-plus-cashback by ~3.6 percentage points per cycle,
 and the two do not stack — credit funds the next purchase directly, so no card is involved.
@@ -85,14 +85,14 @@ never been measured. It cannot be recovered from history, for reasons in §5.
 
 ```
 expected_profit = P × ( 0.84 / ratio − 1 )      capped at 3.2 × P
-ratio           = current asking price ÷ Sellpy's own value estimate
+ratio           = current asking price ÷ the marketplace's own value estimate
 ```
 
 This is `0.84 × estimate − P` rearranged. The cap binds at `ratio ≤ 0.2`, i.e. when an item
 appears to be worth five times its price.
 
 ⚠️ **The 0.84 in that formula is doing two different jobs.** As a *fee* it is solid
-arithmetic. As part of a *buy filter* it silently assumes the item sells at Sellpy's own
+arithmetic. As part of a *buy filter* it silently assumes the item sells at the marketplace's own
 estimate — an assumption that has never been tested and, per §5, cannot be tested
 retrospectively. The filter was withdrawn on 2026-08-06 for that reason; the ratio now
 ranks candidates but no longer excludes any.
@@ -123,7 +123,7 @@ Beyond that, as of 2026-08-06:
 
 People clear out closets seasonally. Winter coats arrive in spring, get listed in April,
 sit all summer and are cheapest in July when nobody wants a coat. They are cheap because of
-the *month*, not because they are bad. Sellpy tags season natively, so no inference is
+the *month*, not because they are bad. The marketplace tags season natively, so no inference is
 needed.
 
 Measured across 1,317 seasonal items, as the median fraction of opening ask retained at
@@ -142,12 +142,12 @@ This is the best-supported idea in the project and the only one with a quantifie
 
 ### 4.2 Idea 2 — Wrong price from the start
 
-Sellpy's pricing sometimes gets an item badly wrong on day one. A wool-and-cashmere coat
+The marketplace's pricing sometimes gets an item badly wrong on day one. A wool-and-cashmere coat
 opened at 55 kr; that is not decay, it is an error, and the error is the entire profit. The
-two items Sellpy opened cheap (55 and 170 kr) both returned 5×; the two it opened
+two items the marketplace opened cheap (55 and 170 kr) both returned 5×; the two it opened
 expensively (1,070 and 1,480 kr) returned 1.4× and 2.0×.
 
-What to look for is a *contradiction between Sellpy's own two signals*: their model says the
+What to look for is a *contradiction between the marketplace's own two signals*: their model says the
 item will sell, yet the opening price is low for the brand and condition. Neither signal
 works alone — the two highest-scoring items were the two worst trades.
 
@@ -192,7 +192,7 @@ regardless of worth. **n = 1.** Recorded because it is free to record.
 
 ### Hard rules — non-negotiable
 
-- **Read-only.** Nothing authenticates as a user or writes to Sellpy, ever.
+- **Read-only.** Nothing authenticates as a user or writes to the marketplace, ever.
 - **One request per second**, enforced in code. The risk that matters is the account, not
   the scraper.
 - **Never submit fabricated data anywhere.**
@@ -317,8 +317,8 @@ Three of these deserve their reasoning stated:
 
 | Column | Why |
 |---|---|
-| `itemAbTestFraction` | Sellpy is running experiments on these items. Capture it to *detect* a confounder; never train on it. |
-| `relevanceRanking*`, `proximityBucket*` | Sellpy's own ranking and personalisation. These *cause* sales by controlling visibility — endogenous, and they leak the outcome into the features. |
+| `itemAbTestFraction` | The marketplace is running experiments on these items. Capture it to *detect* a confounder; never train on it. |
+| `relevanceRanking*`, `proximityBucket*` | The marketplace's own ranking and personalisation. These *cause* sales by controlling visibility — endogenous, and they leak the outcome into the features. |
 | `personalization_sizeCategory` | Derived from fields already included. |
 | `estimateBid_rounded` | Present on ~1% of items. |
 | `keywords`, `concept`, `style` | Generated text tags. Possibly useful later; not first. |
@@ -406,7 +406,7 @@ In order of how much they matter:
    trade needs this or seasonality to work at all.
 3. **Does the seasonal edge survive contact with Circle?** §4.1 measured it on consignment
    prices on both sides.
-4. **Does Sellpy's sellability score predict *our* sell-through?** They compute p(sell) per
+4. **Does the marketplace's sellability score predict *our* sell-through?** They compute p(sell) per
    item and hand it over free. If it transfers, the hardest term is solved.
 
 Everything else — the dashboard, the scoring, the crawler — exists to make those four

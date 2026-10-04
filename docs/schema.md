@@ -4,7 +4,7 @@ Reference for the v2 schema. `overview.md` is why, `api-notes.md` is the mechani
 getting it, this is what actually lands in the database.
 
 Everything here is swept from **Algolia** (`prod_marketItem_se_relevance`), the search
-index the sellpy.se storefront runs on. Two fields come from elsewhere and are marked.
+index the marketplace storefront runs on. Two fields come from elsewhere and are marked.
 
 ⚠️ **All prices are in öre.** Divide by 100 for kronor. A row reading `19000` is 190 kr.
 
@@ -18,7 +18,7 @@ index the sellpy.se storefront runs on. Two fields come from elsewhere and are m
 
 | Column | What it is |
 |---|---|
-| `item_id` | Sellpy's own id, and the URL: `sellpy.se/item/{item_id}` |
+| `item_id` | The marketplace's own id, and the URL: `the marketplace/item/{item_id}` |
 | `brand_id` | → `brands` |
 | `category_id` | → `lookup`. Full path, e.g. *Kvinna > Kläder > Byxor & Jeans* |
 | `item_type_id` | → `lookup`. The garment itself — *Kavaj*, *Träningsskor* |
@@ -30,7 +30,7 @@ index the sellpy.se storefront runs on. Two fields come from elsewhere and are m
 |---|---|
 | `size_id` | → `lookup`. Coded: `WMN-EU-38`, `SHOES-EU-40`, `PANTS-INCH-30`, `NO SIZE` |
 | `condition_id` | → `lookup`. Nytt / Mycket bra / Bra / Acceptabelt / Dåligt |
-| `has_defect` | Sellpy recorded a flaw |
+| `has_defect` | The marketplace recorded a flaw |
 | `fabric_id` | → `lookup`. Denim, Mesh, Ribbstickad… |
 | `pattern_id` | → `lookup`. Enfärgat, randigt… |
 | `material_mask` | Bitmask of fibres — decode via `mask_meaning` |
@@ -44,10 +44,10 @@ index the sellpy.se storefront runs on. Two fields come from elsewhere and are m
 |---|---|
 | `first_price_ore` | Price when **we** first saw it |
 | `price_ore` | Price at the most recent check |
-| `old_price_ore` | Sellpy's own previous price — one markdown step back. Present on ~80% |
+| `old_price_ore` | The marketplace's own previous price — one markdown step back. Present on ~80% |
 | `final_price_ore` | What it sold for. From **Parse**, not Algolia |
 | `history` | Packed `[day, price, day, price…]`, day counted from `first_seen`. Appended only when the price moves |
-| `price_to_estimate` | Sellpy's asking price ÷ their own value estimate. Only ~2,900 items, from the abandoned **Typesense** index |
+| `price_to_estimate` | The marketplace's asking price ÷ their own value estimate. Only ~2,900 items, from the abandoned **Typesense** index |
 | `peer_pct_frozen` | Where this item sat among comparable live listings the last time it was seen on the shelf, 0 = cheapest. **Written once, when the item resolves** |
 | `peer_median_ore_frozen` | What that peer group's median ask was |
 | `peer_n_frozen` | How many peers the comparison was against. Under ~20 it means little |
@@ -59,7 +59,7 @@ items is the `peer_prices` table, which is truncated and rebuilt every pass and 
 holds **nothing** for resolved items — that is exactly why these exist. `analytics.md` §2.
 
 ⚠️ **`first_price_ore` is not the original listing price**, except for items caught within
-days of listing. Sellpy marks prices down roughly 11% every 10 days, and the median item
+days of listing. The marketplace marks prices down roughly 11% every 10 days, and the median item
 was already **52 days old** when enrolled. Measured against true histories: an item we
 recorded at 110 kr had opened at **3,460 kr**, 27 markdowns earlier. Reconstructing the
 opening from age is only reliable under ~30 days (80% within ±20%); past 120 days the
@@ -104,7 +104,7 @@ sweep finds. Rows are corrected the first time a pass touches them, so treat any
 |---|---|
 | `outcome` | `null` still listed · 1 sold · 2 expired · 3 unknown · 4 below floor |
 | `is_reserved` | Someone has it held — a leading indicator of a sale |
-| `last_chance` | Sellpy's own end-of-life flag |
+| `last_chance` | The marketplace's own end-of-life flag |
 | `p2p` | true = Circle listing (private seller), false = consignment. **Different economics — do not pool them** |
 
 ### Sampling bookkeeping
@@ -124,7 +124,7 @@ short, and a shortfall makes the weight wrong rather than merely imprecise.
 
 ## Circle round trips
 
-**`circle_origins`** — the purchase side of a Circle resale: what the reseller paid Sellpy
+**`circle_origins`** — the purchase side of a Circle resale: what the reseller paid the marketplace
 for the item they are now reselling. Keyed by the **Circle** `item_id`, reached via the
 `preceding` pointer on the Parse `Item`.
 
@@ -149,7 +149,7 @@ each one was priceable only because the original happened to survive.
 **`v_tracked_roundtrips`** — `items` ⋈ `circle_origins`, giving `asking_multiple`,
 `realised_multiple`, `profit_ore` and `days_paid_to_sold`.
 
-Sellpy keeps 16% of a Circle sale, so **break-even is a gross multiple of 1.19×**.
+The marketplace keeps 16% of a Circle sale, so **break-even is a gross multiple of 1.19×**.
 `profit_ore` is null unless `outcome = 'sold'`: a final price on an expired listing is an
 asking price nobody paid, and counting it as revenue would invent profit.
 
@@ -172,7 +172,7 @@ it as a first reading, not the answer.
 
 ## Supporting tables
 
-**`brands`** (16,067) — `name`, `price_point` (Sellpy's 1–6 tier), `styles`, `age_groups`,
+**`brands`** (16,067) — `name`, `price_point` (the marketplace's 1–6 tier), `styles`, `age_groups`,
 `origin_vibe`, `ethos`, `aesthetic_tone`, `population_listings`, `stratum`.
 
 Every classification field is **constant per brand** — re-verified 2026-08-08 across
@@ -194,12 +194,49 @@ populated; the rest have no live item left in the index to read. `population_lis
 `recompute_sample_weights()` derives the weights from, and what makes inclusion
 probability known rather than assumed.
 
-**`shortlist_daily`** (~500/day, 30-day window) — the undervalued shortlist the dashboard
-grid reads, one row per item per pass. Deliberately **denormalised**: brand names, lookup
-values, decoded masks and the brand-level aggregates are all copied in, because the grid
-sorts on every one of them and a computed column in a view cannot be indexed. Written by
+**`shortlist_daily`** (~133,000 rows, one per pooled item) — the undervalued shortlist the
+dashboard grid reads. Deliberately **denormalised**: brand names, lookup values, decoded
+masks and the brand-level aggregates are all copied in, because the grid sorts on every
+one of them and a computed column in a view cannot be indexed. Written by
 `refresh_shortlist()`, then given its pictures by `loppan/shortlist.py`. See
 `analytics.md` §8.
+
+⚠️ **This table used to be "~500/day, 30-day window" and this line said so until
+2026-08-17.** It is neither any more: it is a *pool*, one row per item with `as_of`
+overwritten in place by `pool_refresh.py` — 133,048 rows carrying four distinct `as_of`
+values, 75% of them on one date. Nothing accumulates and nothing ages out; only 932 rows
+were `still_listed = false`.
+
+That stale sentence cost real money rather than merely misleading a reader. Every
+secondary index on this table was built with an `as_of` **leading column**, which was
+correct for 30 buckets of 500 rows and is useless for four buckets of 133,000 — the
+planner ignored a prefix with no selectivity, while `pool_refresh.py` rewrote `as_of` for
+every row daily and so rebuilt each index in full every day. Five of them
+(`shortlist_disc_idx`, `_sell_`, `_price_`, `_peern_`, `_brand_`) had **0–24 scans across
+a 24-day window** and 38 MB between them; they were dropped on 2026-08-17, and
+`deploy/restore-dropped-indexes.sql` explains why any replacement should omit the prefix.
+The four size and favourites indexes are genuinely used (84–481 scans) and were kept.
+
+⚠️ **A full-pool upsert every day is a full pool of dead tuples every day.** This table
+and `items` between them had ~95 MB of bloat and 205 MB of index on 2026-08-17, which is
+what put the database over Supabase's 500 MB limit. `VACUUM FULL` reclaimed it (642 MB →
+361 MB, with `peer_live` — see `analytics.md` §1), but that is a one-time reclaim, not a
+fix: the churn is structural and the bloat will return. `autovacuum` alone cannot help,
+because it returns pages to the free space map and never to the filesystem.
+
+⚠️ **`markdown_pct` is 0 on every freshly-swept row, and that is arithmetic rather than a
+bug.** `row_of()` fills `first_price_ore` and `price_ore` from the same Algolia field, so
+`refresh_pool_bucket` computes `(1 - p/p)` and stores 0. The column can only become
+non-zero in `pool_refresh.py`, from a price re-read after the sweep — and that line was
+missing until 2026-08-13, so the whole pool read 0 and sorting on it did nothing in
+either direction. 4,569 rows were already marked down when it was found, one by 73.8%.
+
+It therefore measures **markdown accrued while we were watching**, bounded by how long
+ago the row's bucket was swept — not markdown from the original listing price, which
+`first_price_ore` does not carry (see "`first_price_ore` is not the original listing
+price" above). `items.old_price_ore` is the real per-step signal and is **not** carried
+into the pool: `sweep_staging` holds only `first_price_ore` and `price_ore`, and only
+36,042 of 134,800 pool rows still join to `items` at all.
 
 ⚠️ **Every column named `_pct` here is a percentage, 0–100** — including `discount_pct`,
 `peer_pct` and `markdown_pct`, which are scaled on write from the 0–1 fractions their
@@ -207,7 +244,7 @@ sources use. `brand_attention_index` is the exception and stays a ratio, because
 "exactly the attention its mix deserves" is the entire meaning of that number.
 
 **`size_group` · `size_system` · `size_value`** are **generated columns**, split from
-`size` so the grid can filter on it. Sellpy codes every size as `GROUP-SYSTEM-VALUE`:
+`size` so the grid can filter on it. The marketplace codes every size as `GROUP-SYSTEM-VALUE`:
 
 | | Examples | Notes |
 |---|---|---|
@@ -226,7 +263,7 @@ and cannot drift from the function the first time someone edits one and not the 
 digit and are unrelated things. Any filter or group-by on the value alone is a bug;
 it only means something alongside its group and system.
 
-### `size_area` — the axis Sellpy's coding lacks
+### `size_area` — the axis the marketplace's coding lacks
 
 **`size_group` mixes two unrelated things.** `WMN` / `MEN` / `CHILD` say *who* a garment
 is cut for; `SHOES` / `PANTS` / `RINGS` / `BELTS` / `GLOVES` / `HATS` say *what part of
@@ -268,9 +305,9 @@ expression; that duplication is deliberate and confined to one place.
 | | Why |
 |---|---|
 | `images` | Re-fetchable by `item_id` from Algolia; 4.7 URLs per item was the single largest per-row cost. ⚠️ **Not *computable* from `item_id`** — see below |
-| `keywords`, `concept`, `style` | Sellpy's generated text tags. Available if text features become interesting |
-| `relevanceRanking*`, `proximityBucket*` | Sellpy's own ranking and personalisation. These **cause** sales by controlling visibility — endogenous, and they leak the outcome into the features |
-| `itemAbTestFraction` | Sellpy runs experiments on these items. Worth capturing to *detect* a confounder, never to train on |
+| `keywords`, `concept`, `style` | The marketplace's generated text tags. Available if text features become interesting |
+| `relevanceRanking*`, `proximityBucket*` | The marketplace's own ranking and personalisation. These **cause** sales by controlling visibility — endogenous, and they leak the outcome into the features |
+| `itemAbTestFraction` | The marketplace runs experiments on these items. Worth capturing to *detect* a confounder, never to train on |
 | `storeIds`, `storageSite`, `bag`, `itemIO`, `user` | Operational identifiers, not properties of the item |
 | `estimateBid_rounded` | Present on ~1% of items |
 
@@ -280,8 +317,8 @@ This table used to say images were "reconstructible from `item_id`". They are no
 sense anyone would read that. A real URL looks like:
 
 ```
-https://prod.images.sellpy.net/photoRobot-case-14-k-8/IWCFH2lSCH-0fca-0.jpg
-                               └── one of ~200 stations ─┘ └id┘ └hex┘
+<cdn-host>/photoRobot-case-14-k-8/IWCFH2lSCH-0fca-0.jpg
+           └── one of ~200 stations ─┘ └id┘ └hex┘
 ```
 
 The folder is whichever photo station shot the item — `photoRobot-case-14-k-8`,
@@ -327,7 +364,7 @@ select count(*) from public.items where season_mask & 8 > 0;
 ```
 
 Population estimates need the weight — an unweighted count answers a question about the
-sample, not about Sellpy:
+sample, not about the marketplace:
 
 ```sql
 select round(sum(sample_weight)) as estimated_real_items

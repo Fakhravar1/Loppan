@@ -177,6 +177,10 @@ search new listings (Algolia) ───────────────┘  
         ─► rebuild price_level / seasonal_index / sell_through ─► export shortlist ─► Supabase (+ images for those ids only)
 ```
 
+The Parse calls and the image-path stripping read the marketplace's endpoints from the
+four `LOPPAN_MARKET_*` repository variables (`loppan/endpoints.py`), which `bq-daily.yml`
+and `bq-fetch-sample.yml` pass in as environment. A local run needs them exported too.
+
 1. **Read live ids** from the `NULL` partition. 5M ids is ~50 MB, which is negligible.
 2. **Fetch by id**: `bq_fetch.py track`, over `algolia.get_objects_parallel` (100 per
    request, `attributesToRetrieve` limited to stored fields). **Measured 2026-10-02:
