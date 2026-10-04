@@ -10,7 +10,9 @@
 #                      re-export shortlist_candidates to Supabase
 #
 # daily ends by exporting the shortlist to Supabase (§7), which needs
-# LOPPAN_SUPABASE_KEY. Everything before it is BigQuery-only.
+# LOPPAN_SUPABASE_KEY. Everything before it is BigQuery-only. Then it stamps
+# runs.completed_at; daily exits at once if today already has that stamp, unless
+# FORCE=1.
 #
 # Brand counts and the kosher list refresh on census, on Mondays, and whenever the
 # list is empty. Every SQL file is idempotent, so rerunning a day is safe: staging
@@ -59,6 +61,26 @@ load() {
 }
 
 echo "mode=$MODE run=$RUN out=$OUT"
+
+# ── Already done today? ─────────────────────────────────────────────────────────
+# bq-daily.yml fires daily mode at three slots because GitHub drops scheduled runs.
+# The first run to finish every step stamps runs.completed_at (the last step below);
+# a later slot sees the stamp and stops here, before any work, brand counts included.
+# FORCE=1 skips the check and runs the day again: every merge is idempotent.
+if [ "$MODE" = daily ]; then
+  if [ "${FORCE:-0}" = 1 ]; then
+    echo "FORCE=1: not checking for a completed run today"
+  else
+    completed=$(scalar "select count(*) from loppan.runs
+                        where run_date = '$RUN' and completed_at is not null")
+    if [ "${completed:-0}" -gt 0 ]; then
+      at=$(scalar "select format_timestamp('%FT%TZ', max(completed_at)) from loppan.runs
+                   where run_date = '$RUN'")
+      echo "today's run already completed at $at; nothing to do"
+      exit 0
+    fi
+  fi
+fi
 
 # ── Brand counts -> kosher list (§12) ───────────────────────────────────────────
 kosher_count=$(scalar 'select count(*) from loppan.kosher_brands')
@@ -187,6 +209,16 @@ PY
   done_
 
   export_shortlist
+
+  # Keep this the very last step of daily: the stamp means every step above finished,
+  # and the guard at the top trusts it.
+  step "mark the run complete"
+  bqout --format=none --parameter="run:DATE:$RUN" \
+    'UPDATE loppan.runs SET completed_at = CURRENT_TIMESTAMP()
+     WHERE run_date = @run AND completed_at IS NULL'
+  echo "  completed_at: $(scalar "select format_timestamp('%FT%TZ', max(completed_at))
+                                  from loppan.runs where run_date = '$RUN'")"
+  done_
   ;;
 
 export)
