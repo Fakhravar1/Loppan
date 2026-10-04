@@ -13,6 +13,7 @@ name: bq-health
 on:
   schedule:
     - cron: "11 6 * * *"  # 08:11 Stockholm (summer time); off the hour, which GitHub drops under load
+    - cron: "41 8 * * *"  # 10:41: a second slot, so one dropped schedule can't silence the alarm
   workflow_dispatch:
   push:
     paths:
