@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests merge_sweep.sql, merge_resolve.sql and model.sql against synthetic rows in
+# Tests merge_sweep.sql, merge_resolve.sql, model.sql and progress.sql against synthetic rows in
 # throwaway loppan._t_* tables, which are dropped on exit whatever happens.
 # Run by bq-schema.yml after schema.sql is applied. Needs only an authenticated bq.
 #
@@ -11,7 +11,7 @@ cd "$(dirname "$0")"
 BQ=(bq --location=EU --quiet query --use_legacy_sql=false --format=none)
 TABLES=(items sweep_staging adjudication_staging circle_origin_staging runs model_params
         brand_rules kosher_brands brand_counts_staging
-        seasonal_index price_level sell_through shortlist_candidates)
+        seasonal_index price_level sell_through shortlist_candidates progress_daily)
 
 cleanup() {
   for t in "${TABLES[@]}"; do bq --location=EU rm -f -t "loppan._t_$t" >/dev/null 2>&1 || true; done
@@ -294,5 +294,127 @@ ASSERT (SELECT STRING_AGG(item_id ORDER BY item_id) FROM loppan._t_shortlist_can
 UPDATE loppan._t_model_params SET value = 30000 WHERE rule = 'export_top_n';
 EOF
 pass "model: prior reproduced, pooling, sell-through, margin, exclusion, seasonal peak, signal, now-first cap"
+
+# ── Progress: the day's row on known numbers ────────────────────────────────
+# R is fixed so the 7-day accuracy window (26 Sep - 2 Oct) crosses a month partition.
+# The model tables are written by hand, so every expected price is known exactly.
+R=2026-10-02
+ago() { date -u -d "$R -$1 day" +%F; }
+A1=$(ago 1); A2=$(ago 2); A3=$(ago 3); A5=$(ago 5); A6=$(ago 6); A7=$(ago 7); A30=$(ago 30)
+sql <<EOF
+CREATE OR REPLACE TABLE loppan._t_items LIKE loppan.items;
+CREATE OR REPLACE TABLE loppan._t_runs LIKE loppan.runs;
+CREATE OR REPLACE TABLE loppan._t_progress_daily LIKE loppan.progress_daily;
+INSERT loppan._t_items (item_id, first_seen, p2p, circle_origin, price_history, fav_history)
+VALUES
+  -- P1: marked down today and gained a like. The only drop and the only like change
+  ('P1', '$A2', FALSE, NULL,
+   [STRUCT(DATE '$A2' AS on_date, 30000 AS price_ore), (DATE '$R', 25000)],
+   [STRUCT(DATE '$A2' AS on_date, 1 AS favourites), (DATE '$R', 3)]),
+  -- P2: a rise today is not a drop; P3: yesterday's drop and like are not today's
+  ('P2', '$A2', FALSE, NULL,
+   [STRUCT(DATE '$A2' AS on_date, 30000 AS price_ore), (DATE '$R', 35000)],
+   [STRUCT(DATE '$A2' AS on_date, 0 AS favourites)]),
+  ('P3', '$A3', FALSE, NULL,
+   [STRUCT(DATE '$A3' AS on_date, 40000 AS price_ore), (DATE '$A1', 30000)],
+   [STRUCT(DATE '$A3' AS on_date, 0 AS favourites), (DATE '$A1', 2)]),
+  -- P4, P5: enrolled today. First sight is neither a drop nor a like change
+  ('P4', '$R', TRUE, NULL,
+   [STRUCT(DATE '$R' AS on_date, 20000 AS price_ore)],
+   [STRUCT(DATE '$R' AS on_date, 0 AS favourites)]),
+  ('P5', '$R', TRUE, STRUCT('o5', 10000, 20000, 3),
+   [STRUCT(DATE '$R' AS on_date, 50000 AS price_ore)], NULL),
+  ('P6', '$A5', FALSE, NULL, NULL, NULL);   -- a NULL array is stored empty
+INSERT loppan._t_items (item_id, brand, category, season_mask, outcome, resolved_on,
+                        final_price_ore, first_seen)
+VALUES
+  ('S1', 'A', 'C', 0,  'sold', '$R',  30000, '$R'),   -- 30000 / 40000         = 0.75, thin
+  ('S2', 'B', 'C', 12, 'sold', '$A3', 24000, '$A30'), -- 24000 / (40000 x 0.8) = 0.75, thick
+  ('S3', 'A', 'C', 0,  'sold', '$A6', 20000, '$A30'), -- 20000 / 40000         = 0.5,  thin
+  ('SQ', 'Q', 'C', 0,  'sold', '$A2', 45000, '$A30'), -- no brand level: / 50000 = 0.9, thin
+  ('S4', 'A', 'C', 0,  'sold', '$A7', 80000, '$A30'), -- 7 days back: outside the window
+  ('X1', 'A', 'C', 0,  'expired',     '$R',  90000, '$A30'),
+  ('F1', 'A', 'C', 0,  'below_floor', '$R',  NULL,  '$A30'),
+  ('U1', 'A', 'C', 0,  'unknown',     '$R',  NULL,  '$A30'),
+  ('U2', 'A', 'C', 0,  'unknown',     '$A1', NULL,  '$A30');
+CREATE OR REPLACE TABLE loppan._t_price_level AS
+SELECT * FROM UNNEST([
+  STRUCT('A' AS brand, 'C' AS category, 5 AS n_sales, 40000.0 AS raw_level_ore,
+         40000.0 AS level_ore),
+  ('B', 'C', 25, 40000.0, 40000.0), (NULL, 'C', 30, 50000.0, 50000.0),
+  ('Z', 'D', 20, 10000.0, 10000.0), (NULL, 'D', 20, 10000.0, 10000.0)]);
+CREATE OR REPLACE TABLE loppan._t_seasonal_index AS
+SELECT grp, sale_month, 0 AS n_sales, CAST(NULL AS FLOAT64) AS kept,
+       IF(grp = 'cold', 0.8, 1.0) AS seasonal_index
+FROM UNNEST(['warm', 'cold', 'flat']) AS grp, UNNEST(GENERATE_ARRAY(1, 12)) AS sale_month;
+CREATE OR REPLACE TABLE loppan._t_shortlist_candidates AS
+SELECT * FROM UNNEST([STRUCT('L1' AS item_id, 'now' AS signal), ('L2', 'now'), ('L3', 'season')]);
+INSERT loppan._t_runs (run_date, finished_at, new_found, completeness, resolve_allowed) VALUES
+  ('$R',  TIMESTAMP '$R 03:00:00',  10, 0.9,   FALSE),
+  ('$R',  TIMESTAMP '$R 04:00:00',  42, 0.999, TRUE),
+  ('$A1', TIMESTAMP '$A1 04:00:00',  7, 1.0,   TRUE);
+EOF
+run_file progress.sql "$R"
+run_file progress.sql "$R"   # the rerun must merge, not duplicate
+sql <<EOF
+CREATE TEMP TABLE p AS SELECT * FROM loppan._t_progress_daily WHERE run_date = '$R';
+ASSERT (SELECT COUNT(*) FROM loppan._t_progress_daily) = 1 AS 'a rerun merges, never duplicates';
+ASSERT (SELECT live_items = 6 AND items_ever = 15 AND enrolled_today = 3 FROM p)
+  AS 'size: 6 live, 15 ever, 3 enrolled today (P4, P5 live, and S1 already sold)';
+ASSERT (SELECT sold_today = 1 AND expired_today = 1 AND below_floor_today = 1
+               AND unknown_today = 1 AND sold_total = 5 FROM p)
+  AS 'today: one of each outcome; U2 resolved yesterday; 5 sales in all';
+ASSERT (SELECT price_drops_today FROM p) = 1
+  AS 'price drops: P1 only. A rise, yesterday''s drop, a first price are not drops';
+ASSERT (SELECT fav_changes_today FROM p) = 1 AS 'like changes: P1 only; first sight is none';
+ASSERT (SELECT new_found = 42 AND completeness = 0.999 FROM p)
+  AS 'runs: the latest row for the day, not the earlier one';
+ASSERT (SELECT combos_ge1 = 3 AND combos_ge20 = 2 AND categories_priced = 2 FROM p)
+  AS 'maturity: A, B, Z have sales; B and Z have 20 or more; C and D are priced';
+ASSERT (SELECT shortlist_now = 2 AND shortlist_season = 1 FROM p) AS 'shortlist by signal';
+ASSERT (SELECT accuracy_n = 4 AND accuracy_median_ratio = 0.75 FROM p)
+  AS 'accuracy: 0.5, 0.75, 0.75, 0.9. S4 is outside the 7 days, X1 expired';
+ASSERT (SELECT accuracy_thin_n = 3 AND accuracy_thin_ratio = 0.75 FROM p)
+  AS 'thin groups (< 20 sales): S1, S3, and SQ priced at its category';
+ASSERT (SELECT accuracy_thick_n = 1 AND accuracy_thick_ratio = 0.75 FROM p)
+  AS 'thick group: S2 at 0.75 only if the cold index 0.8 is applied (else 0.6)';
+ASSERT (SELECT circle_with_origin = 1 AND circle_without_origin = 1 FROM p)
+  AS 'Circle: P5 has its purchase price, P4 waits';
+ASSERT (SELECT storage_gib > 0 AND billed_gib_today >= 0 AND computed_at IS NOT NULL FROM p)
+  AS 'storage and billed bytes are readable';
+INSERT loppan._t_items (item_id, brand, category, season_mask, outcome, resolved_on,
+                        final_price_ore, first_seen)
+VALUES ('S5', 'A', 'C', 0, 'sold', '$R', 40000, '$A30');   -- ratio 1.0
+EOF
+run_file progress.sql "$R"
+run_file progress.sql "$(date -u -d "$R +1 day" +%F)"   # a day with no runs row
+sql <<EOF
+ASSERT (SELECT COUNT(*) FROM loppan._t_progress_daily WHERE run_date = '$R') = 1
+  AS 'a later rerun overwrites the day';
+ASSERT (SELECT sold_today = 2 AND sold_total = 6 AND accuracy_n = 5
+        FROM loppan._t_progress_daily WHERE run_date = '$R')
+  AS 'the overwrite carries the new sale';
+ASSERT (SELECT new_found IS NULL AND completeness IS NULL AND live_items = 6
+        FROM loppan._t_progress_daily WHERE run_date = DATE_ADD('$R', INTERVAL 1 DAY))
+  AS 'no runs row still writes the day, with those two NULL';
+EOF
+pass "progress: counts, price drops, like changes, accuracy on known prices, idempotent MERGE"
+
+echo "  example block, from these fixtures:"
+bq --location=EU --quiet query --use_legacy_sql=false --format=json \
+  "select * except (computed_at) from loppan._t_progress_daily order by run_date" \
+  | { grep -v '^WARNING:' || true; } | python3 progress_block.py "$(date -u -d "$R +1 day" +%F)"
+storage_src=__TABLES__
+bq --location=EU --quiet query --use_legacy_sql=false --format=none \
+  "select 1 from \`region-eu\`.INFORMATION_SCHEMA.TABLE_STORAGE limit 1" >/dev/null 2>&1 \
+  && storage_src=TABLE_STORAGE
+echo "  info  storage_gib comes from $storage_src"
+# What the progress row's one big read costs on the real live partition (a dry run, free).
+live_bytes=$(bq --location=EU query --use_legacy_sql=false --dry_run \
+  "select countif(price_history[safe_ordinal(array_length(price_history))].on_date = current_date()),
+          countif(array_length(fav_history) >= 2), countif(p2p and circle_origin is null),
+          countif(first_seen = current_date())
+   from loppan.items where resolved_on is null" 2>&1 | grep -oE '[0-9]+ bytes' | head -1 || true)
+echo "  info  progress.sql's live-partition read, on the real items table: ${live_bytes:-?}"
 
 echo "all checks passed"
