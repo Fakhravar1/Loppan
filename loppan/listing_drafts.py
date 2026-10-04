@@ -17,8 +17,11 @@ goes out.
 Price defaults: the shortlist's `expected_now_ore` rounded to 10 kr when the item is
 on the shortlist, otherwise `--multiple` x the current ask (2 by default), rounded.
 
-Photos land in %LOCALAPPDATA%\\loppan\\plick\\photos\\<item_id>\\01.jpg ...; the draft
-JSON goes to ...\\plick\\drafts\\<item_id>.json and to stdout.
+Photos land in %LOCALAPPDATA%\\loppan\\plick\\photos\\<item_id>\\01.webp ...; the draft
+JSON goes to ...\\plick\\drafts\\<item_id>.json and to stdout. Files are named by their
+real format: the image CDN serves WebP under paths ending .jpg, whatever the Accept
+header or query says (checked 2026-10-04), and converting to JPEG would need Pillow.
+Android reads WebP natively.
 
 ⚠️ Plick's own rules (plick.se/vanliga-fragor) say listing photos must be ones the
 seller took. The owner holds the companies' permission to reuse the marketplace's
