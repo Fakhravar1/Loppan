@@ -1,12 +1,21 @@
 name: bq-daily
 
 # Loppan's daily sweep into BigQuery: deploy/bigquery/daily.sh (docs/bigquery.md §5).
-#   schedule           daily mode, 02:23 UTC (04:23 Stockholm summer time). Fires only
-#                      from the default branch. Deliberately off the hour: GitHub drops
-#                      or delays top-of-hour schedules under load, and the 02:00 slot
-#                      never fired on 2026-10-03.
+#   schedule           daily mode at three slots: 02:23, 04:47 and 07:13 UTC (04:23,
+#                      06:47 and 09:13 Stockholm summer time, all the same run date).
+#                      Fires only from the default branch. GitHub drops or delays
+#                      scheduled runs under load: the 02:00 slot never fired on
+#                      2026-10-03, and the 02:23 slot never fired on 2026-10-04. Each
+#                      slot is off the hour, where drops are worst. The first slot
+#                      that fires does the day: daily.sh stamps runs.completed_at as
+#                      its last step, and a later slot that finds the stamp exits 0
+#                      in seconds. A slot after a failed run finds no stamp and runs
+#                      the day again, which is safe: every merge is idempotent. The
+#                      concurrency group queues a slot behind a run in progress,
+#                      never alongside it.
 #   workflow_dispatch  any mode: daily | census (the one-off backfill) | export | origins (the
-#                      Circle-origin backlog, in chunks)
+#                      Circle-origin backlog, in chunks). force reruns a daily that
+#                      already completed today (FORCE=1 skips the guard)
 #   push               only on the bigquery-daily branch, when this file or daily.sh
 #                      changes, in PUSH_MODE: how the pipeline was proven before merge
 #
@@ -16,6 +25,8 @@ name: bq-daily
 on:
   schedule:
     - cron: "23 2 * * *"
+    - cron: "47 4 * * *"
+    - cron: "13 7 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -26,6 +37,10 @@ on:
       origins_max:
         description: Circle origins to fetch this run (Parse is serial, ~2 s each)
         default: "1500"
+      force:
+        description: Run daily even if today's run already completed (FORCE=1)
+        type: boolean
+        default: false
   push:
     branches: [bigquery-daily]
     paths:
@@ -43,6 +58,12 @@ concurrency:
 env:
   PUSH_MODE: export   # the mode a push to bigquery-daily runs
   PUSH_ORIGINS_MAX: "6000"   # ~3.3 h of serial Parse calls, inside the 330 min limit (2nd batch)
+  # Marketplace endpoints: public values kept out of the repository so the source
+  # does not name the target (loppan/endpoints.py). Repository VARIABLES, not secrets.
+  LOPPAN_MARKET_API: ${{ vars.LOPPAN_MARKET_API }}
+  LOPPAN_MARKET_GRAPHQL: ${{ vars.LOPPAN_MARKET_GRAPHQL }}
+  LOPPAN_MARKET_SITE: ${{ vars.LOPPAN_MARKET_SITE }}
+  LOPPAN_MARKET_IMAGE_HOSTS: ${{ vars.LOPPAN_MARKET_IMAGE_HOSTS }}
 
 jobs:
   run:
@@ -67,6 +88,8 @@ jobs:
         env:
           MODE: ${{ github.event_name == 'push' && env.PUSH_MODE || inputs.mode || 'daily' }}
           ORIGINS_MAX: ${{ github.event_name == 'push' && env.PUSH_ORIGINS_MAX || inputs.origins_max || '1500' }}
+          # Only a dispatch with force ticked sets it; every schedule keeps the guard.
+          FORCE: ${{ inputs.force && '1' || '0' }}
           OUT_DIR: ${{ runner.temp }}/bq-run
           # The shortlist export (the last step of daily, and export mode) writes to Supabase.
           LOPPAN_SUPABASE_KEY: ${{ secrets.LOPPAN_SUPABASE_KEY }}

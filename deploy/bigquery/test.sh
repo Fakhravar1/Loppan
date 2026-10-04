@@ -187,6 +187,26 @@ ASSERT (SELECT COUNT(*) FROM loppan._t_items) = 5 AS 'resolving moved rows, it d
 EOF
 pass "day 3: gate open, resolves once, row moves partition"
 
+# ── runs.completed_at: daily.sh's last statement, which its guard reads ──────
+# One D3 row carries an old stamp: the update must keep it and stamp only NULLs.
+sql <<EOF
+INSERT loppan._t_runs (run_date, finished_at, completeness, resolve_allowed, completed_at)
+VALUES ('$D3', CURRENT_TIMESTAMP(), 1.0, TRUE, TIMESTAMP '2000-01-01'),
+       ('$D2', CURRENT_TIMESTAMP(), 1.0, TRUE, NULL);
+EOF
+"${BQ[@]}" --parameter="run:DATE:$D3" \
+  'UPDATE loppan._t_runs SET completed_at = CURRENT_TIMESTAMP()
+   WHERE run_date = @run AND completed_at IS NULL'
+sql <<EOF
+ASSERT (SELECT COUNTIF(completed_at IS NULL) FROM loppan._t_runs WHERE run_date = '$D3') = 0
+  AS 'every row of the run is stamped';
+ASSERT (SELECT COUNTIF(completed_at = TIMESTAMP '2000-01-01') FROM loppan._t_runs) = 1
+  AS 'an existing stamp is kept';
+ASSERT (SELECT completed_at IS NULL FROM loppan._t_runs WHERE run_date = '$D2')
+  AS 'another day is not stamped';
+EOF
+pass "completed_at: stamps the run's rows only, keeps an earlier stamp"
+
 # Dry run: what the daily MERGE would read, against the whole table.
 merge_bytes=$(retarget merge_sweep.sql | bq --location=EU query --use_legacy_sql=false \
   --dry_run --parameter="run:DATE:$D3" 2>&1 | grep -oE '[0-9]+ bytes' | head -1 || true)

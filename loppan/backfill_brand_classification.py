@@ -1,4 +1,4 @@
-"""Fill in `brands.price_point` and the rest of Sellpy's brand classification.
+"""Fill in `brands.price_point` and the rest of the marketplace's brand classification.
 
     python loppan/backfill_brand_classification.py
     python loppan/backfill_brand_classification.py --all      # re-read every brand

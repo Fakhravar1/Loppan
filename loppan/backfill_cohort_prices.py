@@ -33,7 +33,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from loppan import db, search, sellpy
+from loppan import db, market, search
 
 BATCH = 60
 
@@ -76,7 +76,7 @@ def from_parse(item_ids: list[str]) -> dict[str, dict]:
         pointers = [
             {"__type": "Pointer", "className": "Item", "objectId": x} for x in chunk
         ]
-        offers = sellpy.find(
+        offers = market.find(
             "MarketOffer",
             {"item": {"$in": pointers}, "region": "SE", "latest": True},
             limit=200,
