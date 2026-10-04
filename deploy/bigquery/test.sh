@@ -365,7 +365,7 @@ ASSERT (SELECT sold_today = 1 AND expired_today = 1 AND below_floor_today = 1
                AND unknown_today = 1 AND sold_total = 5 FROM p)
   AS 'today: one of each outcome; U2 resolved yesterday; 5 sales in all';
 ASSERT (SELECT price_drops_today FROM p) = 1
-  AS 'price drops: P1 only. A rise, yesterday''s drop, a first price are not drops';
+  AS 'price drops: P1 only. A rise, a drop yesterday, a first price are not drops';
 ASSERT (SELECT fav_changes_today FROM p) = 1 AS 'like changes: P1 only; first sight is none';
 ASSERT (SELECT new_found = 42 AND completeness = 0.999 FROM p)
   AS 'runs: the latest row for the day, not the earlier one';
