@@ -181,6 +181,12 @@ class Track(unittest.TestCase):
         self.assertEqual((run["fetched"], run["missing"]), (250, 125))
         self.assertTrue(run["resolve_allowed"])
 
+    def test_runs_row_meets_the_contract(self):
+        # daily.sh validates this row before loading it; a column added to runs in
+        # schema.sql must be added here too, or every daily run fails at the load.
+        run, _ = self.run_track([f"id{n}" for n in range(10)], fail_heads=set())
+        self.assertEqual(bq_schema.row_errors(run, bq_schema.load()["runs"]), [])
+
 
 class Floor(unittest.TestCase):
     def setUp(self):
