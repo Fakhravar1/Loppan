@@ -106,7 +106,7 @@ c = float(comp)
 row = {"run_date": run, "started_at": started, "finished_at": now,
        "live_ids": int(live), "fetched": int(fetched), "missing": int(missing),
        "new_found": int(new_found), "completeness": c,
-       "resolve_allowed": c >= 0.995, "note": note}
+       "resolve_allowed": c >= 0.995, "completed_at": None, "note": note}
 open(f, "w", encoding="utf-8").write(json.dumps(row) + "\n")
 PY
 }

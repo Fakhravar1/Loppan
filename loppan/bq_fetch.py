@@ -353,6 +353,7 @@ def track(ids: list[str], out: NDJSON, run_date: str, full: bool = False,
            "new_found": None, "completeness": completeness,
            "resolve_allowed": bool(completeness is not None
                                    and completeness >= RESOLVE_GATE),
+           "completed_at": None,   # stamped by daily.sh once every step is done
            "note": (f"track: {len(todo):,} ids unanswered, {not_for_sale:,} present "
                     f"but not for sale, {below_floor:,} below the floor"
                     if ids else "no live ids")}
