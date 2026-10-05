@@ -263,6 +263,14 @@ and cannot drift from the function the first time someone edits one and not the 
 digit and are unrelated things. Any filter or group-by on the value alone is a bug;
 it only means something alongside its group and system.
 
+**`listings`** (migration `create_listings`, 2026-10-04) — one row per (`item_id`,
+`venue`) for resale listings. `status` is draft / published / removed / sold;
+`draft` holds the whole draft JSON, `price_listed_ore` the asking price, and
+`listing_url`, `posted_at`, `removed_at` and `note` are for the posting phases.
+`loppan/listing_drafts.py --save` upserts `status='draft'` rows for venue `plick` and
+leaves any row already past draft alone. RLS on with no policies and all grants revoked
+from anon and authenticated: only the service role reads or writes it.
+
 ### `size_area` — the axis the marketplace's coding lacks
 
 **`size_group` mixes two unrelated things.** `WMN` / `MEN` / `CHILD` say *who* a garment

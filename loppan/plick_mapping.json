@@ -1,0 +1,171 @@
+{
+  "_about": [
+    "Marketplace -> Plick tables for loppan/listing_drafts.py.",
+    "Every Plick name below was read from public plick.se pages on 2026-10-04: /kategorier, /kategorier/<slug> breadcrumbs and filters, /vanliga-fragor.",
+    "'confirmed': the Plick name exists AND names the same thing as the source value. 'assumed': the Plick name exists but the correspondence is a judgement call. Assumed and fallback mappings set needs_review."
+  ],
+  "limits": {
+    "title_max": 50,
+    "title_status": "assumed: Plick documents no title limit; the longest live title seen on /produkter was 59 characters, so 50 stays inside whatever the app enforces",
+    "description_max": 1000,
+    "description_status": "assumed: no documented limit; drafts run ~200 characters"
+  },
+  "conditions": {
+    "_status": "confirmed: Plick's six grades from /vanliga-fragor/hur-ska-jag-beskriva-skicket-pa-min-vara. Plick's sixth, Återvinning, has no source counterpart.",
+    "confirmed": {
+      "Nytt": "Nytt skick",
+      "Mycket bra": "Mycket bra skick",
+      "Bra": "Bra skick",
+      "Acceptabelt": "Acceptabelt skick",
+      "Dåligt": "Dåligt skick"
+    },
+    "review": {
+      "Nytt": "condition check: Plick's Nytt skick requires original packaging or the price tag still on"
+    }
+  },
+  "passform": {
+    "_status": "confirmed: the Passform filter on /kategorier/klader and /kategorier/skor offers Man, Unisex, Kvinna. No children's option was found.",
+    "Kvinna": "Kvinna",
+    "Man": "Man",
+    "Unisex": "Unisex"
+  },
+  "sizes": {
+    "_status": "Plick size pickers from the filters: clothing XXS-XXL+ (Dam and Herr), women's shoes 35-43+, men's shoes 37-45+, waist W22-W40+ (Dam) and W26-W42+ (Herr). letter, shoes and waist are confirmed; eu_clothing is an assumed conversion, since Plick offers no EU clothing sizes.",
+    "letter": {
+      "XXS": "XXS", "XS": "XS", "S": "S", "M": "M", "L": "L", "XL": "XL",
+      "XXL": "XXL+", "2XL": "XXL+", "XXXL": "XXL+", "3XL": "XXL+", "4XL": "XXL+", "5XL": "XXL+"
+    },
+    "eu_clothing": {
+      "Kvinna": {"30": "XXS", "32": "XXS", "34": "XS", "36": "S", "38": "M", "40": "L", "42": "XL",
+                 "44": "XXL+", "46": "XXL+", "48": "XXL+", "50": "XXL+", "52": "XXL+", "54": "XXL+"},
+      "Man": {"42": "XXS", "44": "XS", "46": "S", "48": "M", "50": "L", "52": "XL",
+              "54": "XXL+", "56": "XXL+", "58": "XXL+", "60": "XXL+", "62": "XXL+"}
+    },
+    "shoes": {"Kvinna": [35, 43], "Man": [37, 45]},
+    "waist": {"Kvinna": [22, 40], "Man": [26, 42]}
+  },
+  "title_keep_case": ["Chelsea boots"],
+  "categories": {
+    "_order": "by_type (the item type) is tried before by_source (the source path minus its demography), confirmed before assumed; fallback by the source's Kläder/Skor level last.",
+    "by_type": {
+      "confirmed": {
+        "Kappa": "Mode > Kläder > Jackor > Kappor",
+        "Dunjacka": "Mode > Kläder > Jackor > Dunjackor",
+        "Trenchcoat": "Mode > Kläder > Jackor > Trenchcoats",
+        "Jeansjacka": "Mode > Kläder > Jackor > Jeansjackor",
+        "Bomberjacka": "Mode > Kläder > Jackor > Bomberjackor",
+        "Pälsjacka": "Mode > Kläder > Jackor > Pälsjackor",
+        "Överskjorta": "Mode > Kläder > Jackor > Overshirts",
+        "Skepparkavaj": "Mode > Kläder > Jackor > Skepparkavajer",
+        "Parkas": "Mode > Kläder > Jackor > Parkajackor",
+        "Rock": "Mode > Kläder > Jackor > Rockar",
+        "Regnjacka": "Mode > Kläder > Jackor > Regnjackor",
+        "Läderjacka": "Mode > Kläder > Jackor > Skinnjackor",
+        "Kavaj": "Mode > Kläder > Jackor > Kavajer",
+        "Kostym": "Mode > Kläder > Kostymer",
+        "Dunväst": "Mode > Kläder > Västar > Dunvästar",
+        "Pälsväst": "Mode > Kläder > Västar > Pälsvästar",
+        "Huvtröja": "Mode > Kläder > Hoodies",
+        "Kortärmad huvtröja": "Mode > Kläder > Hoodies",
+        "Blus": "Mode > Kläder > Blusar",
+        "Skjorta": "Mode > Kläder > Skjortor",
+        "Kortärmad skjorta": "Mode > Kläder > Skjortor",
+        "Flanellskjorta": "Mode > Kläder > Skjortor",
+        "Buttondown-skjorta": "Mode > Kläder > Skjortor",
+        "T-shirt": "Mode > Kläder > T-shirts",
+        "Jeans": "Mode > Kläder > Jeans & Byxor > Jeans",
+        "Chinos": "Mode > Kläder > Jeans & Byxor > Chinos",
+        "Manchesterbyxor": "Mode > Kläder > Jeans & Byxor > Manchesterbyxor",
+        "Mjukisbyxor": "Mode > Kläder > Jeans & Byxor > Mjukisbyxor",
+        "Kostymbyxor": "Mode > Kläder > Jeans & Byxor > Kostymbyxor",
+        "Cargobyxor": "Mode > Kläder > Jeans & Byxor > Cargobyxor",
+        "Leggings": "Mode > Kläder > Jeans & Byxor > Leggings",
+        "Byxdress": "Mode > Kläder > Jeans & Byxor > Byxdress",
+        "Stövletter": "Mode > Skor > Boots > Stövletter",
+        "Chelsea boots": "Mode > Skor > Boots > Chelsea Boots",
+        "Cowboyboots": "Mode > Skor > Boots > Cowboy Boots",
+        "Boots": "Mode > Skor > Boots",
+        "Stövlar": "Mode > Skor > Stövlar",
+        "Kängor": "Mode > Skor > Kängor",
+        "Loafers": "Mode > Skor > Loafers",
+        "Sneakers": "Mode > Skor > Sneakers",
+        "Sandaler": "Mode > Skor > Sandaler",
+        "Tofflor": "Mode > Skor > Tofflor",
+        "Ballerinaskor": "Mode > Skor > Ballerinaskor"
+      },
+      "assumed": {
+        "Allvädersjacka": "Mode > Kläder > Jackor > Vindjackor",
+        "Lättviktsjacka": "Mode > Kläder > Jackor > Vindjackor",
+        "Anorak": "Mode > Kläder > Jackor > Vindjackor",
+        "Softshelljacka": "Mode > Kläder > Jackor > Vindjackor",
+        "Skaljacka": "Mode > Kläder > Jackor > Vindjackor",
+        "Shearlingjacka": "Mode > Kläder > Jackor > Pälsjackor",
+        "Vinterkappa": "Mode > Kläder > Jackor > Kappor",
+        "Läderkappa": "Mode > Kläder > Jackor > Kappor",
+        "Dunkappa": "Mode > Kläder > Jackor > Dunjackor",
+        "Dunrock": "Mode > Kläder > Jackor > Dunjackor",
+        "Vinterrock": "Mode > Kläder > Jackor > Rockar",
+        "Läderrock": "Mode > Kläder > Jackor > Rockar",
+        "Duffel": "Mode > Kläder > Jackor > Rockar",
+        "Regnkappa": "Mode > Kläder > Jackor > Regnjackor",
+        "Regnrock": "Mode > Kläder > Jackor > Regnjackor",
+        "Regnponcho": "Mode > Kläder > Jackor > Regnjackor",
+        "Oljerock": "Mode > Kläder > Jackor > Regnjackor",
+        "Bikerjacka": "Mode > Kläder > Jackor > Skinnjackor",
+        "Motorcykeljacka": "Mode > Kläder > Jackor > Skinnjackor",
+        "Pilotjacka": "Mode > Kläder > Jackor > Bomberjackor",
+        "Collegejacka": "Mode > Kläder > Jackor > Bomberjackor",
+        "Fodrad jeansjacka": "Mode > Kläder > Jackor > Jeansjackor",
+        "Smokingkavaj": "Mode > Kläder > Jackor > Kavajer",
+        "Ytterväst": "Mode > Kläder > Västar",
+        "Jeansväst": "Mode > Kläder > Västar",
+        "Kostymväst": "Mode > Kläder > Västar",
+        "Väst": "Mode > Kläder > Västar",
+        "Slipover": "Mode > Kläder > Stickat",
+        "Skidbyxor": "Mode > Kläder > Jeans & Byxor > Täckbyxor",
+        "Överdragsbyxor": "Mode > Kläder > Jeans & Byxor > Täckbyxor",
+        "Skjortklänning": "Mode > Kläder > Klänningar",
+        "Gummistövlar": "Mode > Skor > Stövlar",
+        "Låga gummistövlar": "Mode > Skor > Stövlar",
+        "Ridstövlar": "Mode > Skor > Stövlar",
+        "Vandringskängor": "Mode > Skor > Kängor",
+        "Curlingkängor": "Mode > Skor > Kängor",
+        "Ökenkängor": "Mode > Skor > Boots",
+        "Tygskor": "Mode > Skor > Sneakers",
+        "Fotbollsskor": "Sportkläder > Skor"
+      }
+    },
+    "by_source": {
+      "confirmed": {
+        "Kläder > Jackor & Ytterkläder": "Mode > Kläder > Jackor",
+        "Kläder > Tröjor & Koftor": "Mode > Kläder > Tröjor & Koftor",
+        "Kläder > Klänningar": "Mode > Kläder > Klänningar",
+        "Kläder > Byxor & Jeans": "Mode > Kläder > Jeans & Byxor",
+        "Kläder > Skjortor": "Mode > Kläder > Skjortor",
+        "Kläder > Underkläder": "Mode > Kläder > Underkläder",
+        "Kläder > T-shirts & Linnen": "Mode > Kläder > T-shirts",
+        "Kläder > Maskerad": "Mode > Kläder > Maskerad & Cosplay",
+        "Skor > Sneakers": "Mode > Skor > Sneakers",
+        "Skor > Sandaler": "Mode > Skor > Sandaler"
+      },
+      "assumed": {
+        "Kläder > Kavajer & Kostymer": "Mode > Kläder > Kostymer",
+        "Kläder > Skjortor & Blusar": "Mode > Kläder > Blusar",
+        "Kläder > Sport- & Träningskläder": "Sportkläder > Kläder",
+        "Kläder > Byxdressar & Set": "Mode > Kläder > Övrigt Inom Kläder",
+        "Skor > Boots & Kängor": "Mode > Skor > Boots",
+        "Skor > Finskor": "Mode > Skor > Övrigt inom skor",
+        "Skor > Klackskor": "Mode > Skor > Pumps",
+        "Skor > Träningsskor": "Sportkläder > Skor",
+        "Skor > Vandringsskor": "Mode > Skor > Övrigt inom skor",
+        "Skor > Vardagsskor": "Mode > Skor > Övrigt inom skor"
+      }
+    },
+    "fallback": {
+      "Kläder": "Mode > Kläder > Övrigt Inom Kläder",
+      "Skor": "Mode > Skor > Övrigt inom skor",
+      "Accessoarer": "Mode > Accessoarer",
+      "*": "Mode > Övrigt Inom Mode"
+    }
+  }
+}
