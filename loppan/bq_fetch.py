@@ -512,7 +512,7 @@ def cmd_adjudicate(a) -> int:
     Written: sold | expired | unknown. NOT written, so they stay live: still_listed,
     ids whose request failed (no answer yet), and ids Parse has no offer for.
     final_price_ore is Parse's last ask; the resolve MERGE may fall back to the
-    item's last seen price where it is null, as track.py did. item_status is
+    item's last seen price where it is null, as v1's track.py did. item_status is
     Parse's itemStatus exactly as returned, beside the outcome it mapped to, so the
     reason for an `unknown` survives.
     """

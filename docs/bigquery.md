@@ -1,8 +1,9 @@
 # The BigQuery move — design and migration
 
-**Status, 2026-10-02: design agreed, nothing built.** Loppan has been paused since the
-2026-08-19 stand-down (`standdown.md`). This file is the plan for restarting it on
-BigQuery instead of Supabase, and the record of why each choice was made. Update it as
+**Status, 2026-10-06: live since 2026-10-02.** The daily pipeline runs from `main`
+(§5), the shortlist feeds the dashboard (§7), and the v1 Supabase system it replaced is
+removed from the repository (tag `v1-final`). This file is the design, and the record of
+why each choice was made. Update it as
 phases land; mark what was measured versus estimated, as the other docs do.
 
 The short version: one row per item, its price and favourite history held in nested
@@ -614,11 +615,14 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
       `shortlist_flagged`) went too, by choice: clean slate
 - [x] The 33 orphaned v1 `public` functions dropped by exact signature, no `CASCADE`
       (`drop_v1_orphan_functions`, 2026-10-02). Supabase's `public` schema is now empty
-- [ ] Delete or archive the four paused v1 workflows
+- [x] v1 removed 2026-10-06: 24 modules, the four paused workflows, the Pi files and their
+      docs. Preserved at tag `v1-final`
 
 ---
 
 ## 10. What carries over, what retires
+
+The v1 files named below were removed on 2026-10-06 and are preserved at tag `v1-final`.
 
 **Reused**: `algolia.py` (client, `get_objects_parallel`, fan-out search),
 `market.py` (Parse), `track.adjudicate`, the origin logic in
@@ -626,7 +630,8 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
 collection code survives. Only the storage underneath it changes.
 
 **Constraints carried over from the 2026-08-14 assessment.** Branch
-`claude/loppan-bigquery-migration-av4mne`, `docs/architecture.md` §9, weighed a BigQuery
+`claude/loppan-bigquery-migration-av4mne` (now tag `archive/loppan-bigquery-migration-av4mne`),
+`docs/architecture.md` §9, weighed a BigQuery
 move before this design existed. Three of its points still bind:
 
 - **Stdlib only, no `pip install`.** Talk to BigQuery through the `bq` CLI the runner

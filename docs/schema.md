@@ -1,5 +1,8 @@
 # What we collect, column by column
 
+> **Written for the Supabase schema (v2), retired 2026-10-02.** The column meanings carry
+> over; the BigQuery table itself is `deploy/bigquery/schema.sql` and `docs/bigquery.md` §4.
+
 Reference for the v2 schema. `overview.md` is why, `api-notes.md` is the mechanics of
 getting it, this is what actually lands in the database.
 

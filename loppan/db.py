@@ -1,4 +1,4 @@
-"""Postgres writes via PostgREST. Stdlib only — no new dependencies.
+"""Supabase writes via PostgREST, for the shortlist export (bq_export.py). Stdlib only.
 
 Credentials come from the environment and are never stored in this repo:
 
@@ -6,10 +6,8 @@ Credentials come from the environment and are never stored in this repo:
     LOPPAN_SUPABASE_KEY   the service-role key, from the Supabase dashboard
                           (Project Settings -> API Keys -> service_role)
 
-The service-role key bypasses row-level security, which is exactly what these
-backend scripts need and exactly why it must never reach a browser, a commit, or
-a log line. Every table has RLS enabled with no policies, so the publishable key
-can read and write nothing.
+The service-role key bypasses row-level security, which is exactly what the export
+needs and exactly why it must never reach a browser, a commit, or a log line.
 """
 
 from __future__ import annotations
@@ -59,10 +57,6 @@ def _creds() -> tuple[str, str]:
     return url, key
 
 
-def configured() -> bool:
-    return bool(os.environ.get("LOPPAN_SUPABASE_KEY"))
-
-
 def upsert(table: str, rows: list[dict], on_conflict: str | None = None) -> int:
     """Insert rows, updating any that already exist. Chunked to keep requests sane."""
     if not rows:
@@ -98,166 +92,6 @@ def upsert(table: str, rows: list[dict], on_conflict: str | None = None) -> int:
     return written
 
 
-PAGE = 1000
-
-
-def update(table: str, rows: list[dict], key: str) -> int:
-    """PATCH existing rows, one request each.
-
-    Use this, not `upsert`, when filling in a few columns on rows that already
-    exist. PostgREST's upsert constructs a complete insert tuple and validates it
-    before resolving the conflict, so any NOT NULL column missing from the payload
-    fails the whole batch — even though the row is already there and the insert
-    will never happen. PATCH updates only the columns supplied, and cannot
-    accidentally create a row.
-    """
-    if not rows:
-        return 0
-    url, apikey = _creds()
-    done = 0
-
-    for row in rows:
-        payload = {k: v for k, v in row.items() if k != key}
-        if not payload:
-            continue
-        req = urllib.request.Request(
-            f"{url}/rest/v1/{table}?{key}=eq.{row[key]}",
-            data=json.dumps(payload, ensure_ascii=False).encode(),
-            headers={
-                "apikey": apikey,
-                "Authorization": f"Bearer {apikey}",
-                "Content-Type": "application/json",
-                "Prefer": "return=minimal",
-            },
-            method="PATCH",
-        )
-        try:
-            with urllib.request.urlopen(req) as resp:
-                resp.read()
-        except urllib.error.HTTPError as exc:
-            raise RuntimeError(
-                f"{table} update {row[key]}: HTTP {exc.code} — {exc.read().decode()[:300]}"
-            ) from exc
-        done += 1
-
-    return done
-
-
-def query(path: str, paginate: bool = True) -> list[dict]:
-    """Read back via PostgREST, e.g. query('v_cohort_summary?select=*').
-
-    PostgREST caps a response at 1000 rows regardless of any `limit` in the query
-    string, and returns the truncated page without complaining. That silently cost
-    us 300 of 1300 cohort items once, so reads page through Range headers by
-    default rather than trusting a single response to be complete.
-    """
-    url, key = _creds()
-    rows: list[dict] = []
-    offset = 0
-
-    while True:
-        req = urllib.request.Request(
-            f"{url}/rest/v1/{path}",
-            headers={
-                "apikey": key,
-                "Authorization": f"Bearer {key}",
-                "Range-Unit": "items",
-                "Range": f"{offset}-{offset + PAGE - 1}",
-            },
-        )
-        with urllib.request.urlopen(req) as resp:
-            page = json.load(resp)
-        rows += page
-        if not paginate or len(page) < PAGE:
-            return rows
-        offset += PAGE
-
-def query_pages(path: str, key: str = "item_id", size: int = PAGE,
-                after: str | None = None):
-    """Yield a read one page at a time, instead of accumulating the whole result.
-
-    Use this over `query` for anything catalogue-sized. `query` materialises every
-    row before the caller sees the first one — for the 669k live items that is
-    288 MB of Python dicts (452 B/row) that then has to stay resident for the whole
-    pass. Paging keeps peak memory proportional to a page.
-
-    Paginates by seeking past the last key read, NOT by Range offsets, for two
-    reasons. Offsets make the database re-walk and discard everything it has
-    already returned, which over 669 pages is quadratic. More importantly they are
-    not stable: PostgREST adds no ORDER BY of its own, Postgres promises no row
-    order without one, and `enrol` can be writing to `items` while a long `track`
-    pass is still reading it — so a row can shift between pages and be silently
-    skipped or returned twice. Ordering by the key and seeking makes each page
-    independent of what happened to the pages before it.
-
-    `key` must appear in the select list, and be unique. `after` starts the walk
-    partway through, which is what makes an interrupted read resumable.
-    """
-    url, apikey = _creds()
-    sep = "&" if "?" in path else "?"
-    last = after
-
-    while True:
-        q = f"{path}{sep}order={key}.asc&limit={size}"
-        if last is not None:
-            q += f"&{key}=gt.{last}"
-        req = urllib.request.Request(
-            f"{url}/rest/v1/{q}",
-            headers={"apikey": apikey, "Authorization": f"Bearer {apikey}"},
-        )
-        with urllib.request.urlopen(req) as resp:
-            page = json.load(resp)
-        if not page:
-            return
-        last = page[-1][key]
-        yield page
-        if len(page) < size:
-            return
-
-
-def delete(path: str) -> None:
-    """DELETE rows matching a PostgREST filter, e.g. delete('track_progress?id=eq.1').
-
-    The filter is required by PostgREST itself — an unfiltered DELETE is rejected
-    rather than silently emptying the table — but pass one deliberately anyway.
-    """
-    url, key = _creds()
-    req = urllib.request.Request(
-        f"{url}/rest/v1/{path}",
-        headers={
-            "apikey": key,
-            "Authorization": f"Bearer {key}",
-            "Prefer": "return=minimal",
-        },
-        method="DELETE",
-    )
-    try:
-        with urllib.request.urlopen(req) as resp:
-            resp.read()
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(
-            f"delete {path}: HTTP {exc.code} — {exc.read().decode()[:300]}"
-        ) from exc
-
-
-def count(path: str) -> int:
-    """How many rows a read would return, without transferring any of them."""
-    url, key = _creds()
-    sep = "&" if "?" in path else "?"
-    req = urllib.request.Request(
-        f"{url}/rest/v1/{path}{sep}limit=1",
-        headers={
-            "apikey": key,
-            "Authorization": f"Bearer {key}",
-            "Range-Unit": "items",
-            "Range": "0-0",
-            "Prefer": "count=exact",
-        },
-        method="HEAD",
-    )
-    with urllib.request.urlopen(req) as resp:
-        content_range = resp.headers.get("Content-Range") or ""
-    return int(content_range.split("/")[-1]) if "/" in content_range else 0
 
 
 def _keepalive(sock) -> None:
