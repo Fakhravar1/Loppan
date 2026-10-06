@@ -680,6 +680,14 @@ as JSON strings.
 5. **Your own sales.** Venue, price and days to sell for items you actually buy belong
    in a separate small table keyed on `item_id`, not in `items`. That table eventually
    replaces the marketplace's prices as the stand-in for Vinted and Plick.
+6. **The blind spot between runs.** A listing that sells before the daily run first sees
+   it is never enrolled, so it never enters sell-through. **Measured 2026-10-06**
+   (`deploy/bigquery/queries/blind_spot.sql`, run with `bq-query.yml`): listings first
+   seen at 0-1 days old sold at 0.6-0.9% per 24 h before the next run. A new listing is
+   unseen for half a run gap on average (12-18 h at the 24-36 h gaps so far), so about
+   0.4-0.7% of new listings are missed: a few hundred sales a day against ~34,000
+   recorded, ~1%. Too small for a second crawl. Dates are days, so a burst in a
+   listing's first hours would not show; rerun the query after a few weeks of data.
 
 ---
 

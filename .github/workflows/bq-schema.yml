@@ -12,6 +12,7 @@ on:
   push:
     paths:
       - deploy/bigquery/**
+      - '!deploy/bigquery/queries/**'   # ad-hoc reads (bq-query.yml) change no schema
       - .github/workflows/bq-schema.yml
 
 permissions:
