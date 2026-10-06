@@ -41,7 +41,7 @@ SELECT i.first_seen, g.next_run, ROUND(g.hours_to_next, 1) AS hours_to_next,
        ROUND(100 * COUNTIF(i.outcome = 'sold' AND i.resolved_on <= g.next_run)
              / COUNT(*), 2) AS pct_sold_by_next,
        ROUND(100 * COUNTIF(i.outcome = 'sold' AND i.resolved_on <= g.next_run)
-             / COUNT(*) / g.hours_to_next * 24, 2) AS pct_sold_per_24h,
+             / COUNT(*) / ANY_VALUE(g.hours_to_next) * 24, 2) AS pct_sold_per_24h,
        COUNTIF(i.outcome = 'below_floor' AND i.resolved_on <= g.next_run) AS below_floor_by_next
 FROM loppan.items i
 JOIN gaps g ON g.run_date = i.first_seen
