@@ -1,0 +1,55 @@
+name: bq-query
+
+# Runs a read-only query file from deploy/bigquery/queries/ and prints the result in the
+# log, since the owner has no local bq. A dry run first prints the bytes and refuses
+# anything over 5 GiB. Dispatch it with the file name, or push a change under
+# deploy/bigquery/queries/ and every file there runs on that branch.
+# The queries are read-only by convention: the account can write, so review them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      file:
+        description: File in deploy/bigquery/queries/, e.g. blind_spot.sql
+        required: true
+  push:
+    paths:
+      - deploy/bigquery/queries/**
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  query:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Query
+        env:
+          FILE: ${{ inputs.file }}
+        run: |
+          if [ -n "$FILE" ]; then files="deploy/bigquery/queries/$(basename "$FILE")"
+          else files=$(ls deploy/bigquery/queries/*.sql); fi
+          for f in $files; do
+            echo "::group::dry run: $f"
+            out=$(bq --location=EU query --use_legacy_sql=false --dry_run < "$f" 2>&1 | grep -v '^WARNING:')
+            echo "$out"
+            echo "::endgroup::"
+            bytes=$(echo "$out" | grep -o '[0-9]\+ bytes' | head -1 | grep -o '[0-9]\+')
+            if [ "${bytes:-0}" -gt $((5 * 1024 * 1024 * 1024)) ]; then
+              echo "::error::$f would read $bytes bytes, over 5 GiB"; exit 1
+            fi
+            echo "===== $f ====="
+            bq --location=EU query --use_legacy_sql=false --format=pretty --max_rows=1000 < "$f"
+          done
