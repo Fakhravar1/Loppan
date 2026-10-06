@@ -621,7 +621,8 @@ The v1 files named below were removed on 2026-10-06 and are preserved at tag `v1
 collection code survives. Only the storage underneath it changes.
 
 **Constraints carried over from the 2026-08-14 assessment.** Branch
-`claude/loppan-bigquery-migration-av4mne`, `docs/architecture.md` §9, weighed a BigQuery
+`claude/loppan-bigquery-migration-av4mne` (now tag `archive/loppan-bigquery-migration-av4mne`),
+`docs/architecture.md` §9, weighed a BigQuery
 move before this design existed. Three of its points still bind:
 
 - **Stdlib only, no `pip install`.** Talk to BigQuery through the `bq` CLI the runner
