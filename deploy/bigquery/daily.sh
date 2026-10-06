@@ -60,6 +60,17 @@ load() {
   echo "  $table: loaded $n rows"
 }
 
+# A retry of the same day must merge its own rows only. With an earlier attempt's rows
+# still staged, an item that attempt resolved would be enrolled again from its 'new'
+# row, and the day's merge would read every copy. Deletes whole partitions only.
+reset_staging() {
+  local t
+  for t in sweep_staging adjudication_staging circle_origin_staging; do
+    bqout --format=none "delete from loppan.$t where run_date = '$RUN'"
+  done
+  echo "  staging cleared for $RUN"
+}
+
 echo "mode=$MODE run=$RUN out=$OUT"
 
 # ── Already done today? ─────────────────────────────────────────────────────────
@@ -185,6 +196,7 @@ daily)
   done_
 
   step "load and merge"
+  reset_staging
   load sweep_staging "$OUT/track.ndjson"
   load sweep_staging "$OUT/new.ndjson"
   python - "$OUT/track_runs.ndjson" "$OUT/new.ndjson" "$STARTED" <<'PY'
@@ -257,4 +269,5 @@ esac
 
 echo "billed this run: $(scalar "select round(ifnull(sum(total_bytes_billed), 0) / pow(1024, 3), 3)
   from \`region-eu\`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
-  where creation_time >= timestamp('$STARTED')") GiB"
+  where creation_time >= timestamp('$STARTED')
+    and ifnull(statement_type, '') != 'SCRIPT'") GiB"   # a script repeats its children's bytes

@@ -335,3 +335,13 @@ ALTER TABLE loppan.progress_daily ALTER COLUMN storage_gib SET OPTIONS (
   description = "Logical GiB stored in the loppan dataset: TABLE_STORAGE, else loppan.__TABLES__");
 ALTER TABLE loppan.progress_daily ALTER COLUMN combos_ge20 SET OPTIONS (
   description = "brand x category groups with at least 20 sales (k_level): their own evidence weighs at least as much as the category's");
+
+-- 2026-10-06: hold the seasonal index at the prior until there is a year of sales ─────
+-- In year 1 the measured kept-share comes only from items listed since the pipeline
+-- started that sold within days, so it tracks pipeline age, not season: with k = 30 a
+-- few dozen young sales made October the peak of every group. A very large k keeps the
+-- prior (docs/bigquery.md §6). Changes only the original seed, never a tuned value.
+UPDATE loppan.model_params
+SET value = 1e9,
+    note = 'Pseudo-sales of weight the seasonal prior keeps per cell. 1e9 = prior only, until a year of own sales exists'
+WHERE rule = 'k_season' AND value = 30.0;
