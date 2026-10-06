@@ -1,0 +1,28 @@
+name: tests
+
+# The offline unit tests (tests/), on every pull request and every push to main. No cloud
+# credentials: they cover the fetcher, every row a fetcher writes against schema.sql (the
+# check that would have caught the 2026-10-05 outage), and the PROGRESS block.
+# The SQL is tested separately, against real BigQuery, by bq-schema.yml's test job.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests
+        run: python3 -m unittest discover tests
