@@ -231,10 +231,13 @@ and `bq-fetch-sample.yml` pass in as environment. A local run needs them exporte
 10. **Progress**: `progress.sql` writes the day's row in `progress_daily`, and the log
     gets a PROGRESS block. See *Progress* below.
 
-**Schedule and the completed-run guard.** GitHub drops or badly delays scheduled runs
-under load: the daily run never fired on its own on 2026-10-03 or 2026-10-04, and both
-days were dispatched by hand. So `bq-daily.yml` fires daily mode at three slots, **02:23,
-04:47 and 07:13 UTC**, all off the hour and all on the same Stockholm run date.
+**Schedule and the completed-run guard.** GitHub delays scheduled runs under load, by
+5-9 h so far: the slots of 2026-10-05 (02:23, 04:47, 07:13 UTC) started at 09:15, 11:50
+and 16:01 UTC, and the runs of 2026-10-03 and 2026-10-04 that looked missed were the
+morning slot arriving late. So `bq-daily.yml` fires daily mode at three slots, **02:23,
+04:47 and 07:13 UTC**, all off the hour and all on the same Stockholm run date, and a
+day's run often lands in the afternoon. Each attempt first clears the day's staging
+partitions, so a retry merges only its own rows.
 `daily.sh` stamps `runs.completed_at` as its very last step, after the shortlist export,
 so the stamp means every step finished. Before any work, brand counts included, daily
 mode checks for a stamped row with today's `run_date`; if there is one it prints
@@ -565,7 +568,7 @@ All of the above was done 2026-10-02 from Cloud Shell. The script is
 - [ ] Cron live from `main` (02:23 UTC daily), watched by `bq-health` and a morning
       Claude check
 - [ ] Three daily slots (02:23, 04:47, 07:13 UTC) behind the `completed_at` guard (§5),
-      because GitHub dropped the scheduled run on 2026-10-03 and 2026-10-04. The first
+      because GitHub delays scheduled runs by hours (5-9 h on 2026-10-03..05). The first
       slot to finish stamps `runs.completed_at`; later slots exit 0. `bq-health` runs at
       06:11 and 08:41 UTC so one dropped slot can't silence the alarm. Done once a day
       shows one full run and the later slots exiting on the guard

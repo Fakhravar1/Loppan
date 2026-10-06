@@ -3,10 +3,11 @@ name: bq-daily
 # Loppan's daily sweep into BigQuery: deploy/bigquery/daily.sh (docs/bigquery.md §5).
 #   schedule           daily mode at three slots: 02:23, 04:47 and 07:13 UTC (04:23,
 #                      06:47 and 09:13 Stockholm summer time, all the same run date).
-#                      Fires only from the default branch. GitHub drops or delays
-#                      scheduled runs under load: the 02:00 slot never fired on
-#                      2026-10-03, and the 02:23 slot never fired on 2026-10-04. Each
-#                      slot is off the hour, where drops are worst. The first slot
+#                      Fires only from the default branch. GitHub delays scheduled
+#                      runs under load, by 5-9 h so far: the 02:23, 04:47 and 07:13
+#                      slots of 2026-10-05 started at 09:15, 11:50 and 16:01 UTC, so a
+#                      day's run often lands in the afternoon. Each slot is off the
+#                      hour, where delays and drops are worst. The first slot
 #                      that fires does the day: daily.sh stamps runs.completed_at as
 #                      its last step, and a later slot that finds the stamp exits 0
 #                      in seconds. A slot after a failed run finds no stamp and runs
