@@ -392,6 +392,12 @@ The prior fades out as our own data comes in:
 `index = (n·measured + k·prior) / (n + k)`, per cell. After a year of sales, n is in the
 thousands and the prior has effectively no weight.
 
+**Held at the prior for year 1 (2026-10-06):** `k_season` is 1e9, so the prior is used
+as is. Year-1 sales are all young (listed after 2026-10-01, sold within days), so their
+kept-share measures pipeline age, not season: at k = 30 they made October the peak of
+every group within four days. Lower k once a full year of sales exists, or measure
+seasonality on an age-neutral basis first.
+
 ---
 
 ## 7. The shortlist in Supabase
