@@ -2,10 +2,11 @@ name: bq-health
 
 # Daily health check (deploy/bigquery/health.sql). A failing ASSERT fails this run, and
 # GitHub emails the repository owner about failed scheduled runs: that is the alert.
-#   - no pipeline run today or yesterday
-#   - the latest run was under the 99.5% completeness gate
-#   - more than 10 GiB billed across the project in 24 h
-# Until the daily pipeline exists only the cost check runs, so it can be live now.
+#   - no completed pipeline run (runs.completed_at) today or yesterday
+#   - the latest completed run was under the 99.5% completeness gate
+#   - items vanished but nothing was adjudicated (a broken Parse step)
+#   - more than 10 GiB billed across the project in 24 h (script parents left out)
+# GitHub starts scheduled runs late (5-9 h so far), which "today or yesterday" absorbs.
 #
 # The schedule only fires from the default branch. The push trigger exercises it on a
 # branch whenever this file or the check changes.
