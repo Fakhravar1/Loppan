@@ -1,15 +1,9 @@
 """Read-only client for the Algolia index the marketplace storefront actually browses.
 
-Why this exists alongside `search.py`. The storefront queries Algolia
-(`prod_marketItem_se_relevance`, ~12.5M documents). The Typesense collection that
-`search.py` reads holds 586,746 — a ~5% subset, verified: only 6.8% of Algolia
-items appear in Typesense, while 99.8% of Typesense items appear in Algolia.
-
-What each source uniquely has:
-  Algolia    — the whole market, `weight`, `priceDrop_SE.oldPrice`, regional
-               favourite buckets, `firstOfferedAt_SE`
-  Typesense  — `priceToEstimateRatio` and `sellabilityEstimate`, and nothing else
-               carries those. Neither is in Parse either.
+The storefront queries Algolia (`prod_marketItem_se_relevance`, ~12.5M documents):
+the whole market, with `weight`, `priceDrop_SE.oldPrice`, regional favourite buckets
+and `firstOfferedAt_SE`. The BigQuery fetcher (bq_fetch.py) reads everything through
+this module except the outcome of a vanished item, which only Parse knows (outcomes.py).
 
 Traps worth knowing before using this:
 
@@ -146,7 +140,7 @@ def _post(path: str, body: dict) -> dict:
     the price-split recursion. OpenSSL's per-connection buffers come from glibc malloc,
     which holds freed heap once fragmented — so a pass sat at ~264 MB RSS while the
     Python side of that same pass peaked at 16 MB and retained nothing (measured
-    2026-08-11; docs/pi-runner.md). It also drops a TLS handshake per request, so this
+    2026-08-11 on the v1 Raspberry Pi runner). It also drops a TLS handshake per request, so this
     is faster as well as smaller.
 
     The body is read in full on every path, including errors. That is what makes the
@@ -200,52 +194,6 @@ def search(filters: str = "", facet_filters: list | None = None,
     return _post(f"{INDEX}/query", body)
 
 
-def wearable_filter(min_price_kr: int = 100) -> tuple[str, list]:
-    """The standing population filter: clothing or shoes, at or above a price floor."""
-    return (f"price_SE.amount>={min_price_kr * 100}",
-            [[f"categories.lvl1:{c}" for c in WEARABLE]])
-
-
-def brand_facets(min_price_kr: int = 100, limit: int = 1000) -> dict[str, int]:
-    """Brand -> listing count across the population. Capped at 1000 by the API,
-    which covers ~59% of items; the remaining ~43,600 brands cannot be enumerated
-    this way and have to be sampled by walking the population."""
-    filters, facet_filters = wearable_filter(min_price_kr)
-    r = search(filters=filters, facet_filters=facet_filters, hits_per_page=0,
-               facets=["metadata.brand"], maxValuesPerFacet=limit)
-    return (r.get("facets") or {}).get("metadata.brand", {})
-
-
-def brand_items(brand: str, cap: int, min_price_kr: int = 100) -> list[dict]:
-    """Up to `cap` items for one brand. A single request while cap <= 1000."""
-    filters, facet_filters = wearable_filter(min_price_kr)
-    ff = list(facet_filters) + [[f"metadata.brand:{brand}"]]
-    out, seen, page = [], set(), 0
-    while len(out) < cap:
-        want = min(cap - len(out), MAX_HITS_PER_PAGE)
-        hits = search(filters=filters, facet_filters=ff,
-                      hits_per_page=want, page=page).get("hits", [])
-        if not hits:
-            break
-        for h in hits:
-            if h["objectID"] not in seen:
-                seen.add(h["objectID"])
-                out.append(h)
-        page += 1
-    return out
-
-
-def get_objects(item_ids: list[str]) -> list[dict | None]:
-    """Fetch by id, 100 per request. Returns None in place for anything missing —
-    which is how a sale is detected, since sold items are removed from the index."""
-    out: list[dict | None] = []
-    for i in range(0, len(item_ids), 100):
-        chunk = item_ids[i:i + 100]
-        body = {"requests": [{"indexName": INDEX, "objectID": x} for x in chunk]}
-        out.extend(_post("*/objects", body)["results"])
-    return out
-
-
 def _drain(done):
     """Yield each finished future's result, then let go of the future itself."""
     while done:
@@ -259,7 +207,7 @@ def _drain(done):
 
 def get_objects_parallel(item_ids: list[str], workers: int = MAX_WORKERS,
                          attributes: list[str] | None = None):
-    """Same as get_objects, in parallel, yielding (chunk_ids, results) as they land.
+    """Fetch by id, 100 per request, in parallel, yielding (chunk_ids, results) as they land.
 
     `attributes`, when given, is sent as each object's `attributesToRetrieve`, so a
     caller that needs five fields does not download the whole ~10 KB record. A

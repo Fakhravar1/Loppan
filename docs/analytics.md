@@ -1,5 +1,8 @@
 # The analytics layer
 
+> **Historical (v1).** The Supabase analytics layer, stood down 2026-08-19 and removed
+> 2026-10-06 (tag `v1-final`). The current model is `docs/bigquery.md` §6.
+
 What gets computed after every track pass, what each number means, and the three ways
 this data will lie to you if you query it naively.
 
@@ -450,7 +453,7 @@ they run — live listing counts, current asking prices, attention. Re-running
 `analytics.py` now stamps today's market with today's date; it cannot reconstruct what
 the shelf looked like on 10 August. The two days are simply gone.
 
-Cause: the Raspberry Pi runner livelocked from 2026-08-10 (docs/pi-runner.md, "The
+Cause: the Raspberry Pi runner livelocked from 2026-08-10 (the v1 Pi runner notes, tag `v1-final`, "The
 second livelock"), and a dropped connection aborted `analytics.py` before the two
 snapshot steps ran — see §1. Both are fixed; the hole stays.
 
@@ -458,7 +461,7 @@ What is *not* affected, and it is the part that matters: **`cohort_checks` is un
 with an observation every day through the incident. The forward cohort is the project's
 one live experiment and it runs on hosted runners, which is exactly why it survived a
 dead Pi. `enrol` and `cohort check` staying hosted is a deliberate choice — see
-docs/pi-runner.md — and this is the incident that justifies it.
+the v1 Pi runner notes (tag `v1-final`) — and this is the incident that justifies it.
 
 ---
 
@@ -786,7 +789,7 @@ Twenty-four came from a different ceiling: **memory, not storage**. Peak RSS of 
 scales with the items it stages — 3.7, 4.3 and 4.1 KB per staged item, measured across
 buckets 5, 4 and 3 on 2026-08-11 — and bucket 3's 66,003 items peaked at 264 MB against
 a 400 MB cgroup ceiling on the Pi. That was the thinnest margin on the box. Halving the
-bucket halves the term that was growing. See docs/pi-runner.md, "The second livelock".
+bucket halves the term that was growing. See the v1 Pi runner notes (tag `v1-final`), "The second livelock".
 
 Raising the count costs nothing in cycle time if the job runs more often: twenty-four
 buckets at twelve runs a day is a **two-day** rotation, faster than the three days

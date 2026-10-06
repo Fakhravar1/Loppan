@@ -1,5 +1,8 @@
 # The marketplace arbitrage crawler — handover
 
+> **Historical.** The original design document (2026-08-04). Its evidence and arguments
+> still stand; its plan was built as v1 and then replaced by `docs/bigquery.md`.
+
 **Status:** design phase, no code written yet. **Site recon DONE 2026-08-04** (§5).
 **Date:** 2026-08-04 (created), updated 2026-08-04 after laptop recon.
 **Why this file exists:** the design conversation happened in a remote Claude Code session

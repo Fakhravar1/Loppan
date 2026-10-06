@@ -30,7 +30,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from loppan import algolia, db, search
+from loppan import algolia, db, endpoints
 
 INT = ("weight_g", "price_ore", "n_sales", "expected_now_ore", "expected_peak_ore",
        "peak_month", "months_to_peak", "gross_margin_ore", "expected_profit_ore")
@@ -57,12 +57,29 @@ def _typed(raw: dict) -> dict:
     return row
 
 
+def image_paths(urls) -> list[str]:
+    """Strip the host, keep the path.
+
+    Parse serves a private S3 URL that 403s; the search index serves the public
+    CDN. The path after the host is identical, so storing only the path keeps
+    both sources consistent and survives a host change.
+    """
+    out = []
+    for url in urls or []:
+        for host in endpoints.image_hosts():
+            if url.startswith(host):
+                url = url[len(host):]
+                break
+        out.append(url)
+    return out
+
+
 def image_paths_for(ids: list[str]) -> dict[str, list[str] | None]:
     """item_id -> image paths, or None when the index no longer has the item."""
     out: dict[str, list[str] | None] = {}
     for chunk, results in algolia.get_objects_parallel(ids, attributes=["images"]):
         for item_id, obj in zip(chunk, results):
-            out[item_id] = None if obj is None else search.image_paths(obj.get("images"))
+            out[item_id] = None if obj is None else image_paths(obj.get("images"))
     return out
 
 

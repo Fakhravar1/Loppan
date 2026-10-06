@@ -138,34 +138,3 @@ def ladder(item_id: str, region: str = "SE") -> list[dict]:
         order="createdAt",
     )
     return sorted(offers, key=lambda o: o["createdAt"])
-
-
-def sample_latest_offers(n: int, region: str = "SE", page: int = 1000) -> list[dict]:
-    """Sample the most recent offer of many items.
-
-    Deliberately unordered. Ordering this query makes the server time out, and the
-    unordered result is effectively arbitrary with respect to price and brand —
-    which is exactly what a cohort sample wants. Selecting on taste would make the
-    cohort measure taste.
-
-    Note the population: `latest=True` means the item's final/current offer, so
-    this mixes still-listed items with ones that already ended. Split on `endedAt`.
-    """
-    out: list[dict] = []
-    seen: set[str] = set()
-    skip = 0
-    while len(out) < n and skip < 9000:
-        batch = find(
-            "MarketOffer",
-            {"region": region, "latest": True},
-            limit=min(page, n - len(out)),
-            skip=skip,
-        )
-        if not batch:
-            break
-        for offer in batch:
-            if offer["objectId"] not in seen:
-                seen.add(offer["objectId"])
-                out.append(offer)
-        skip += page
-    return out
