@@ -8,12 +8,9 @@ Two questions only the marketplace's own backend can answer:
   origin_of            a Circle listing: what did its seller pay the marketplace for
                        the item, and how far had it been marked down by then?
 
-These used to live in track.py, cohort.py and backfill_item_origins.py. All three
-import db.py (Supabase) at module level, and the BigQuery path (bq_fetch.py) must
-not touch Supabase at all. So the logic moved here and those modules import it
-back: `track.adjudicate`, `cohort.STATUS_OUTCOME` and
-`backfill_item_origins.origin_of` still exist and behave as before, apart from the
-rounding fix noted at `_ore`.
+This logic came from v1's track.py, cohort.py and backfill_item_origins.py (removed
+2026-10-06; tag v1-final), which imported db.py (Supabase) at module level. The
+BigQuery path (bq_fetch.py) must not touch Supabase, so it lives here.
 
 Conduct. Every call goes through the Parse client's own throttle, so there is one
 request in flight at its MIN_INTERVAL_S. Nothing here may ever run in a worker
@@ -49,7 +46,7 @@ STATUS_OUTCOME = {
     "skänkt": "expired",
 }
 
-# A Circle origin, as backfill_item_origins.py writes it. PostgREST rejects a batch
+# A Circle origin, in the shape v1's backfill_item_origins.py wrote it. PostgREST rejects a batch
 # whose objects do not all carry the same keys, so every row starts from this shape
 # with explicit nulls.
 FIELDS = ("item_id", "original_id", "bought_price_ore", "bought_on",

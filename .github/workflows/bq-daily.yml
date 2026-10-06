@@ -16,8 +16,6 @@ name: bq-daily
 #   workflow_dispatch  any mode: daily | census (the one-off backfill) | export | origins (the
 #                      Circle-origin backlog, in chunks). force reruns a daily that
 #                      already completed today (FORCE=1 skips the guard)
-#   push               only on the bigquery-daily branch, when this file or daily.sh
-#                      changes, in PUSH_MODE: how the pipeline was proven before merge
 #
 # Runs as loppan-pipeline through Workload Identity Federation, like every bq-* job.
 # bq-health.yml checks the next morning that a run happened and passed the gate.
@@ -41,11 +39,6 @@ on:
         description: Run daily even if today's run already completed (FORCE=1)
         type: boolean
         default: false
-  push:
-    branches: [bigquery-daily]
-    paths:
-      - .github/workflows/bq-daily.yml
-      - deploy/bigquery/daily.sh
 
 permissions:
   contents: read
@@ -56,8 +49,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PUSH_MODE: export   # the mode a push to bigquery-daily runs
-  PUSH_ORIGINS_MAX: "6000"   # ~3.3 h of serial Parse calls, inside the 330 min limit (2nd batch)
   # Marketplace endpoints: public values kept out of the repository so the source
   # does not name the target (loppan/endpoints.py). Repository VARIABLES, not secrets.
   LOPPAN_MARKET_API: ${{ vars.LOPPAN_MARKET_API }}
@@ -86,8 +77,8 @@ jobs:
 
       - name: Run
         env:
-          MODE: ${{ github.event_name == 'push' && env.PUSH_MODE || inputs.mode || 'daily' }}
-          ORIGINS_MAX: ${{ github.event_name == 'push' && env.PUSH_ORIGINS_MAX || inputs.origins_max || '1500' }}
+          MODE: ${{ inputs.mode || 'daily' }}
+          ORIGINS_MAX: ${{ inputs.origins_max || '1500' }}
           # Only a dispatch with force ticked sets it; every schedule keeps the guard.
           FORCE: ${{ inputs.force && '1' || '0' }}
           OUT_DIR: ${{ runner.temp }}/bq-run
