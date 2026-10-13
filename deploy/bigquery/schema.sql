@@ -345,3 +345,22 @@ UPDATE loppan.model_params
 SET value = 1e9,
     note = 'Pseudo-sales of weight the seasonal prior keeps per cell. 1e9 = prior only, until a year of own sales exists'
 WHERE rule = 'k_season' AND value = 30.0;
+
+-- 2026-10-13: the seasonal index learns again ─────────────────────────────────
+-- It now measures sold price relative to brand x category peers from any sale, not the
+-- share of the opening ask kept by young items, and learns only the shape between
+-- measured months (docs/bigquery.md §6). Pipeline age no longer leaks in, so the prior
+-- can give way to our own sales. Runs after the 2026-10-06 hold on every apply, so the
+-- pair always ends at 30; a tuned value is never touched.
+UPDATE loppan.model_params
+SET value = 30.0,
+    note = 'Pseudo-sales of weight the seasonal prior keeps in each group x month cell'
+WHERE rule = 'k_season' AND value = 1e9;
+
+MERGE loppan.model_params t
+USING (
+  SELECT 'season_min_peers' AS rule, 20.0 AS value,
+         'Sales a brand x category needs within the window before its sales measure the season' AS note
+) s
+ON t.rule = s.rule
+WHEN NOT MATCHED THEN INSERT (rule, value, note) VALUES (s.rule, s.value, s.note);
