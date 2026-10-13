@@ -4,7 +4,8 @@
 -- Reads plain columns only, never price_history, so it costs tens of bytes an item.
 -- Pooling weights and limits come from loppan.model_params, so tuning needs no deploy.
 --
---   seasonal_index        season group x month: the year-1 prior blended with our own sales
+--   seasonal_index        season group x month: the year-1 prior, its shape updated by our
+--                         own sales relative to their brand x category peers
 --   price_level           brand x category (and brand NULL = the category itself):
 --                         deseasonalised median sold price, pooled toward the category
 --   sell_through          brand x category (and brand NULL): sold / (sold + expired), pooled
@@ -13,6 +14,8 @@
 
 DECLARE k_level  FLOAT64 DEFAULT (SELECT value FROM loppan.model_params WHERE rule = 'k_level');
 DECLARE k_season FLOAT64 DEFAULT (SELECT value FROM loppan.model_params WHERE rule = 'k_season');
+DECLARE min_peers INT64 DEFAULT CAST(
+  (SELECT value FROM loppan.model_params WHERE rule = 'season_min_peers') AS INT64);
 DECLARE k_sell   FLOAT64 DEFAULT (SELECT value FROM loppan.model_params WHERE rule = 'k_sell');
 DECLARE window_days INT64 DEFAULT CAST(
   (SELECT value FROM loppan.model_params WHERE rule = 'window_days') AS INT64);
@@ -28,35 +31,65 @@ CREATE TEMP FUNCTION season_group(mask INT64) AS (
 );
 
 -- ─── seasonal_index ─────────────────────────────────────────────────────────
--- Blended in kept-share space, the prior's own unit, then normalised to a 12-month mean
--- of 1. With no sales of our own this reproduces the prior exactly. Measured kept-share
--- needs the opening ask, so only history_complete sales count toward it.
+-- Measured as sold price relative to the item's peers: each consignment sale divided by
+-- its brand x category median over the window, then the geometric mean of that per
+-- group x month. Not the median: asks sit on round price points, so the median of the
+-- ratio is stuck at 1.0 in most months. Any sale counts, whenever the item was listed, so the measure does not depend
+-- on how long the pipeline has run. (The old measure, share of the opening ask kept,
+-- needed history_complete items, so in year 1 it measured pipeline age: §6.)
+--
+-- Only the shape is learned. The measured months of a group are scaled to share the
+-- prior's mean over those same months, so a single measured month reproduces the prior,
+-- and a level difference between our census and the prior's sample cannot pose as a
+-- season. Blended per cell, (n·measured + k·prior) / (n + k), then normalised to a
+-- 12-month mean of 1. Circle sales are left out: the prior is consignment clearing.
 
 CREATE OR REPLACE TABLE loppan.seasonal_index AS
-WITH measured AS (
-  SELECT season_group(season_mask) AS grp,
-         EXTRACT(MONTH FROM resolved_on) AS sale_month,
-         COUNT(*) AS n,
-         APPROX_QUANTILES(final_price_ore / first_price_ore, 2)[OFFSET(1)] AS kept
+WITH sold AS (
+  SELECT brand, category, season_group(season_mask) AS grp,
+         EXTRACT(MONTH FROM resolved_on) AS sale_month, final_price_ore
   FROM loppan.items
-  WHERE outcome = 'sold' AND final_price_ore > 0
-    AND history_complete AND first_price_ore > 0
+  WHERE outcome = 'sold' AND final_price_ore > 0 AND NOT IFNULL(p2p, FALSE)
     AND resolved_on >= DATE_SUB(@run, INTERVAL window_days DAY)
+),
+peers AS (
+  SELECT brand, category, APPROX_QUANTILES(final_price_ore, 2)[OFFSET(1)] AS peer_ore
+  FROM sold
+  WHERE brand IS NOT NULL
+  GROUP BY 1, 2
+  HAVING COUNT(*) >= min_peers
+),
+measured AS (
+  SELECT s.grp, s.sale_month, COUNT(*) AS n,
+         EXP(AVG(LN(s.final_price_ore / pe.peer_ore))) AS rel
+  FROM sold s
+  JOIN peers pe USING (brand, category)
+  WHERE s.grp != 'flat'
   GROUP BY 1, 2
 ),
+prior AS (
+  SELECT season_group AS grp, sale_month,
+         median_kept_pct / AVG(median_kept_pct) OVER (PARTITION BY season_group) AS prior_index
+  FROM loppan.seasonal_prior
+),
+anchored AS (
+  SELECT p.grp, p.sale_month, p.prior_index, IFNULL(m.n, 0) AS n_sales,
+         m.rel / AVG(m.rel) OVER (PARTITION BY p.grp)
+           * AVG(IF(m.rel IS NULL, NULL, p.prior_index)) OVER (PARTITION BY p.grp)
+           AS measured_index
+  FROM prior p
+  LEFT JOIN measured m USING (grp, sale_month)
+),
 blended AS (
-  SELECT p.season_group AS grp, p.sale_month,
-         IFNULL(m.n, 0) AS n_sales,
-         (IFNULL(m.n, 0) * IFNULL(m.kept, 0) + k_season * p.median_kept_pct / 100)
-           / (IFNULL(m.n, 0) + k_season) AS kept
-  FROM loppan.seasonal_prior p
-  LEFT JOIN measured m ON m.grp = p.season_group AND m.sale_month = p.sale_month
+  SELECT *, (n_sales * IFNULL(measured_index, 0) + k_season * prior_index)
+              / (n_sales + k_season) AS raw_index
+  FROM anchored
 )
-SELECT grp, sale_month, n_sales, kept,
-       kept / AVG(kept) OVER (PARTITION BY grp) AS seasonal_index
+SELECT grp, sale_month, n_sales, prior_index, measured_index,
+       raw_index / AVG(raw_index) OVER (PARTITION BY grp) AS seasonal_index
 FROM blended
 UNION ALL
-SELECT 'flat', sale_month, 0, CAST(NULL AS FLOAT64), 1.0
+SELECT 'flat', sale_month, 0, 1.0, CAST(NULL AS FLOAT64), 1.0
 FROM UNNEST(GENERATE_ARRAY(1, 12)) AS sale_month;
 
 -- ─── price_level ────────────────────────────────────────────────────────────

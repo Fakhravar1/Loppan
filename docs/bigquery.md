@@ -392,15 +392,34 @@ The other combinations are too thin to estimate.
   set (n = 459 + 858). Same direction, different numbers. Some cells here rest on 9–17
   sales.
 
-The prior fades out as our own data comes in:
-`index = (n·measured + k·prior) / (n + k)`, per cell. After a year of sales, n is in the
-thousands and the prior has effectively no weight.
+### How our own sales update it (2026-10-13)
 
-**Held at the prior for year 1 (2026-10-06):** `k_season` is 1e9, so the prior is used
-as is. Year-1 sales are all young (listed after 2026-10-01, sold within days), so their
-kept-share measures pipeline age, not season: at k = 30 they made October the peak of
-every group within four days. Lower k once a full year of sales exists, or measure
-seasonality on an age-neutral basis first.
+The prior fades out as our own data comes in:
+`index = (n·measured + k·prior) / (n + k)`, per cell, at k = 30.
+
+**What is measured.** Each consignment sale divided by the median sold price of its
+brand × category over the window (brands with at least `season_min_peers` = 20 sales),
+then the geometric mean of that per season group × month. Any sale counts, whenever the
+item was listed: the census tracks every live item, so October's sales include items
+listed months ago. Circle sales are left out, because the prior is consignment clearing.
+
+**Only the shape is learned.** A group's measured months are scaled to share the prior's
+mean over those same months. One measured month therefore reproduces the prior exactly,
+two months learn how they compare to each other, and a full year replaces the prior. A
+level difference between our census and the prior's 1,336-item sample cannot pose as a
+season.
+
+**Why not the old measure.** Until 2026-10-13 the measured part was the share of the
+opening ask kept, which needs the opening ask, so only items listed since the pipeline
+started counted. Those were all young and sold within days, so they measured pipeline
+age: at k = 30 they made October the peak of every group within four days, and k was
+held at 1e9 (prior only). Capping the age instead does not work: recomputed on the prior's
+own data, sales within 30 days of listing show no season at all (every month 0.88-1.03).
+The seasonal signal *is* age, out-of-season items sit longer, so the measure has to
+include old items, which only the final sold price allows.
+
+⚠️ Sales under the 150 kr floor never get a final price, so the deepest out-of-season
+markdowns are missing from the measure. It understates the trough a little.
 
 ---
 

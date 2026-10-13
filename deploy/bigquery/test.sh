@@ -45,7 +45,8 @@ CREATE OR REPLACE TABLE loppan._t_kosher_brands         LIKE loppan.kosher_brand
 INSERT loppan._t_kosher_brands (brand, listings, kosher_since, counted_on)
 VALUES ('Acme', 500, CURRENT_DATE(), CURRENT_DATE());   -- 'Tiny' has no row: not kosher
 INSERT loppan._t_model_params (rule, value) VALUES
-  ('k_level', 20), ('k_season', 30), ('k_sell', 20), ('window_days', 365),
+  ('k_level', 20), ('k_season', 30), ('season_min_peers', 20), ('k_sell', 20),
+  ('window_days', 365),
   ('export_max_pct_of_expected', 60), ('export_top_n', 30000);
 EOF
 
@@ -314,6 +315,45 @@ ASSERT (SELECT STRING_AGG(item_id ORDER BY item_id) FROM loppan._t_shortlist_can
 UPDATE loppan._t_model_params SET value = 30000 WHERE rule = 'export_top_n';
 EOF
 pass "model: prior reproduced, pooling, sell-through, margin, exclusion, seasonal peak, signal, now-first cap"
+
+# ── Seasonal index: our own sales reshape the prior ─────────────────────────
+# Cold sales in January and February at 2:1 against the same peers, 30 each, so with
+# k_season = 30 each cell is half measured, half prior. The two measured months keep the
+# prior's mean over January + February, so only their ratio moves. Circle sales at ten
+# times the price must change nothing.
+sql <<'EOF'
+INSERT loppan._t_items (item_id, brand, category, season_mask, outcome, resolved_on,
+                        final_price_ore, price_ore, history_complete, p2p)
+SELECT CONCAT('Pj', CAST(i AS STRING)), 'P', 'E', 12, 'sold', DATE '2026-01-15', 40000, 40000, FALSE, FALSE
+FROM UNNEST(GENERATE_ARRAY(1, 30)) AS i
+UNION ALL
+SELECT CONCAT('Pf', CAST(i AS STRING)), 'P', 'E', 12, 'sold', DATE '2026-02-15', 20000, 20000, FALSE, FALSE
+FROM UNNEST(GENERATE_ARRAY(1, 30)) AS i
+UNION ALL
+SELECT CONCAT('Pc', CAST(i AS STRING)), 'P', 'E', 12, 'sold', DATE '2026-01-15', 400000, 400000, FALSE, TRUE
+FROM UNNEST(GENERATE_ARRAY(1, 30)) AS i;
+EOF
+run_file model.sql 2026-10-02
+sql <<'EOF'
+ASSERT (SELECT n_sales FROM loppan._t_seasonal_index WHERE grp = 'cold' AND sale_month = 1) = 30
+  AS 'Circle sales do not count toward the season';
+ASSERT (SELECT ABS(MAX(IF(sale_month = 1, seasonal_index, NULL))
+                   / MAX(IF(sale_month = 2, seasonal_index, NULL))
+                   - (2 * (ANY_VALUE(pj) + ANY_VALUE(pf)) / 3 + ANY_VALUE(pj))
+                     / ((ANY_VALUE(pj) + ANY_VALUE(pf)) / 3 + ANY_VALUE(pf)))
+        FROM (SELECT *, MAX(IF(sale_month = 1, prior_index, NULL)) OVER () AS pj,
+                        MAX(IF(sale_month = 2, prior_index, NULL)) OVER () AS pf
+              FROM loppan._t_seasonal_index WHERE grp = 'cold')) < 1e-9
+  AS 'Jan : Feb is half prior, half measured 2:1 scaled to the prior mean of the two';
+ASSERT (SELECT ABS(MAX(IF(sale_month = 3, seasonal_index / prior_index, NULL))
+                   - MAX(IF(sale_month = 4, seasonal_index / prior_index, NULL)))
+        FROM loppan._t_seasonal_index WHERE grp = 'cold') < 1e-9
+  AS 'unmeasured cold months keep the prior shape between them';
+ASSERT (SELECT MAX(ABS(seasonal_index - prior_index))
+        FROM loppan._t_seasonal_index WHERE grp = 'warm') < 1e-9
+  AS 'warm, with no sales of its own, is still the prior';
+EOF
+pass "seasonal index: our sales reshape the measured months, Circle excluded, the rest keep the prior"
 
 # ── Progress: the day's row on known numbers ────────────────────────────────
 # R is fixed so the 7-day accuracy window (26 Sep - 2 Oct) crosses a month partition.
