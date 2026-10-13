@@ -11,7 +11,7 @@ cd "$(dirname "$0")"
 BQ=(bq --location=EU --quiet query --use_legacy_sql=false --format=none)
 TABLES=(items sweep_staging adjudication_staging circle_origin_staging runs model_params
         brand_rules kosher_brands brand_counts_staging
-        seasonal_index price_level sell_through shortlist_candidates progress_daily)
+        seasonal_index price_level price_level_type sell_through shortlist_candidates progress_daily)
 
 cleanup() {
   for t in "${TABLES[@]}"; do bq --location=EU rm -f -t "loppan._t_$t" >/dev/null 2>&1 || true; done
@@ -263,6 +263,8 @@ UNION ALL SELECT 'L1', 'A', 'C', 0,  NULL, NULL, NULL,  15000, FALSE
 UNION ALL SELECT 'L2', 'A', 'C', 0,  NULL, NULL, NULL, 150000, FALSE
 UNION ALL SELECT 'L3', 'B', 'C', 12, NULL, NULL, NULL,  18000, FALSE
 UNION ALL SELECT 'L5', 'B', 'C', 12, NULL, NULL, NULL,  40000, FALSE;
+-- A's five sales and L1 are coats; nothing else has a type
+UPDATE loppan._t_items SET item_type = 'Kappa' WHERE item_id LIKE 'As%' OR item_id = 'L1';
 EOF
 run_file model.sql 2026-10-02
 sql <<'EOF'
@@ -284,6 +286,16 @@ ASSERT (SELECT resolved FROM loppan._t_sell_through WHERE brand = 'Q' AND catego
 ASSERT (SELECT ROUND(sell_through, 4) FROM loppan._t_sell_through
         WHERE brand = 'Q' AND category = 'D') = 0.5
   AS 'below_floor counts as not sold: (2 + 20 x 0.5) / (4 + 20)';
+ASSERT (SELECT ROUND(level_ore) FROM loppan._t_price_level_type
+        WHERE brand = 'A' AND category = 'C' AND item_type = 'Kappa') = 49200
+  AS 'A coats pooled toward A in C: (5 x 30000 + 20 x 54000) / 25';
+ASSERT (SELECT AS STRUCT expected_type_now_ore, pct_of_expected_type, type_n_sales
+        FROM loppan._t_shortlist_candidates WHERE item_id = 'L1')
+     = STRUCT(49200 AS expected_type_now_ore, 30.5 AS pct_of_expected_type, 5 AS type_n_sales)
+  AS 'L1, a coat, is priced against A coats beside A in C';
+ASSERT (SELECT LOGICAL_AND(expected_type_now_ore = expected_now_ore AND type_n_sales = 0)
+        FROM loppan._t_shortlist_candidates WHERE item_id != 'L1')
+  AS 'an item with no type sales gets the brand x category price as its type price';
 ASSERT (SELECT gross_margin_ore FROM loppan._t_shortlist_candidates WHERE item_id = 'L1') = 22800
   AS 'L1 margin: 0.7 x 54000 - 15000';
 ASSERT (SELECT COUNT(*) FROM loppan._t_shortlist_candidates WHERE item_id = 'L2') = 0
@@ -303,15 +315,20 @@ ASSERT (SELECT signal FROM loppan._t_shortlist_candidates WHERE item_id = 'L5') 
 ASSERT (SELECT LOGICAL_AND((signal = 'now') = (pct_of_expected <= 60))
         FROM loppan._t_shortlist_candidates)
   AS 'signal is now exactly when the price is at most 60% of expected now';
-ASSERT (SELECT gross_margin_ore FROM loppan._t_shortlist_candidates WHERE item_id = 'L5')
-     > (SELECT gross_margin_ore FROM loppan._t_shortlist_candidates WHERE item_id = 'L1')
-  AS 'fixture: the season item L5 out-earns the now item L1, so the cap test means something';
+ASSERT (SELECT discount_ore FROM loppan._t_shortlist_candidates WHERE item_id = 'L1') = 39000
+  AS 'L1 discount: 54000 - 15000, chance of selling left out';
+ASSERT (SELECT STRING_AGG(item_id ORDER BY discount_rank) FROM loppan._t_shortlist_candidates)
+     = 'L1,L3,L5'
+  AS 'ranked now first, by kronor of discount: L1 39000 before L3 ~32000, then season L5';
+ASSERT (SELECT discount_ore FROM loppan._t_shortlist_candidates WHERE item_id = 'L5')
+     > (SELECT discount_ore FROM loppan._t_shortlist_candidates WHERE item_id = 'L1')
+  AS 'fixture: the season item L5 has the larger discount, so the cap test means something';
 UPDATE loppan._t_model_params SET value = 2 WHERE rule = 'export_top_n';
 EOF
 run_file model.sql 2026-10-02
 sql <<'EOF'
 ASSERT (SELECT STRING_AGG(item_id ORDER BY item_id) FROM loppan._t_shortlist_candidates) = 'L1,L3'
-  AS 'top 2: both now items survive the cap, the higher-margin season item L5 does not';
+  AS 'top 2: both now items survive the cap, the bigger-discount season item L5 does not';
 UPDATE loppan._t_model_params SET value = 30000 WHERE rule = 'export_top_n';
 EOF
 pass "model: prior reproduced, pooling, sell-through, margin, exclusion, seasonal peak, signal, now-first cap"

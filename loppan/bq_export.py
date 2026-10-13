@@ -33,8 +33,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from loppan import algolia, db, endpoints
 
 INT = ("weight_g", "price_ore", "n_sales", "expected_now_ore", "expected_peak_ore",
-       "peak_month", "months_to_peak", "gross_margin_ore", "expected_profit_ore")
-FLOAT = ("sell_through", "pct_of_expected")
+       "peak_month", "months_to_peak", "gross_margin_ore", "expected_profit_ore",
+       "type_n_sales", "expected_type_now_ore", "discount_ore", "discount_rank")
+FLOAT = ("sell_through", "pct_of_expected", "pct_of_expected_type")
 BOOL = ("p2p", "history_complete")
 TEXT = ("item_id", "brand", "category", "item_type", "size_code", "condition",
         "demography", "signal", "as_of")

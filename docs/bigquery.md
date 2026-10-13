@@ -342,6 +342,11 @@ split into two parts, estimated at different levels of detail:
 - **`level`**: median sold price over the last 365 days, *with the season removed*
   (each sale divided by its month's index). It is pulled toward the category's level
   when sales are few: `(n·level_bc + k·level_c) / (n + k)`, starting at k = 20.
+- **`type level`** (2026-10-13): the same, one level finer, brand × category × item
+  type (coat, trench coat, jacket), pulled toward `level` with the same k. A Burberry coat
+  and a Burberry jacket share a category but not a price. The shortlist carries both
+  prices and both discounts (`expected_type_now_ore`, `pct_of_expected_type`) so the
+  dashboard can show them side by side; selection and ranking still use `level`.
 - **`index`**: how a season group sells in month m relative to its yearly average.
   Estimated per season group, not per brand, because brand × month would be mostly empty
   cells.
@@ -353,7 +358,13 @@ Each live item then gets **two signals**, which answer different questions:
 | **Bargain now**: `price / expected_sold(now)` is low | Cheap even for this month: mispriced | Buy, relist soon |
 | **Seasonal bet**: `expected_sold(peak month)` ≫ price | Cheap *because* of the season | Buy, hold until the peak month |
 
-Both are ranked by **expected profit in kronor**, because you want absolute bargains:
+Both are ranked by **discount in kronor** (2026-10-13, `discount_ore`, `discount_rank`):
+the expected sold price at the month the item would be sold, minus its price. The
+chance of selling is left out of the ranking on purpose: the aim is underpriced items
+to wear or resell on any marketplace, so the marketplace's final prices are the measure
+and `sell_through` is a column to filter on. 'now' items still rank above 'season'.
+
+Once fees and shipping are known, profit will be:
 
 ```
 expected_profit_kr = sell_through × expected_sold(target month) × (1 − venue fee)
