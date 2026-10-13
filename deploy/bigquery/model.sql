@@ -8,6 +8,8 @@
 --                         own sales relative to their brand x category peers
 --   price_level           brand x category (and brand NULL = the category itself):
 --                         deseasonalised median sold price, pooled toward the category
+--   price_level_type      brand x category x item_type: the same, pooled toward the brand x
+--                         category level. Shown beside it, never instead of it
 --   sell_through          brand x category (and brand NULL): sold / (sold + expired), pooled
 --   shortlist_candidates  live items under the loosest threshold, with their signal
 --                         ('now' or 'season'), 'now' ranked first, then by gross margin
@@ -121,6 +123,35 @@ UNION ALL
 SELECT CAST(NULL AS STRING), category, n, med, med
 FROM c;
 
+-- ─── price_level_type ───────────────────────────────────────────────────────
+-- One level finer: a coat and a jacket of the same brand share a category but not a
+-- price. Pulled toward the brand x category level (or the category's) with the same
+-- k_level, so a type with few sales reads close to the number it refines. Shown beside
+-- the brand x category price in the shortlist; selection and ranking still use that one.
+
+CREATE OR REPLACE TABLE loppan.price_level_type AS
+WITH sales AS (
+  SELECT i.brand, i.category, i.item_type, i.final_price_ore / si.seasonal_index AS deseason_ore
+  FROM loppan.items i
+  JOIN loppan.seasonal_index si
+    ON si.grp = season_group(i.season_mask)
+   AND si.sale_month = EXTRACT(MONTH FROM i.resolved_on)
+  WHERE i.outcome = 'sold' AND i.final_price_ore > 0
+    AND i.brand IS NOT NULL AND i.item_type IS NOT NULL
+    AND i.resolved_on >= DATE_SUB(@run, INTERVAL window_days DAY)
+),
+bct AS (
+  SELECT brand, category, item_type, COUNT(*) AS n,
+         APPROX_QUANTILES(deseason_ore, 2)[OFFSET(1)] AS med
+  FROM sales GROUP BY 1, 2, 3
+)
+SELECT t.brand, t.category, t.item_type, t.n AS n_sales, t.med AS raw_level_ore,
+       (t.n * t.med + k_level * COALESCE(pl.level_ore, plc.level_ore)) / (t.n + k_level)
+         AS level_ore
+FROM bct t
+LEFT JOIN loppan.price_level pl  ON pl.brand = t.brand AND pl.category = t.category
+LEFT JOIN loppan.price_level plc ON plc.brand IS NULL AND plc.category = t.category;
+
 -- ─── sell_through ───────────────────────────────────────────────────────────
 -- The share that sold at or above the floor. below_floor counts as not sold: it was
 -- marked down past 150 kr without selling, which is what a reseller needs to know.
@@ -177,10 +208,14 @@ priced AS (
          season_group(l.season_mask) AS grp,
          COALESCE(pl.level_ore, plc.level_ore) AS level_ore,
          IFNULL(pl.n_sales, 0) AS n_sales,
+         COALESCE(pt.level_ore, pl.level_ore, plc.level_ore) AS type_level_ore,
+         IFNULL(pt.n_sales, 0) AS type_n_sales,
          COALESCE(st.sell_through, stc.sell_through) AS sell_through
   FROM loppan.items l
   LEFT JOIN loppan.price_level pl   ON pl.brand = l.brand AND pl.category = l.category
   LEFT JOIN loppan.price_level plc  ON plc.brand IS NULL AND plc.category = l.category
+  LEFT JOIN loppan.price_level_type pt
+    ON pt.brand = l.brand AND pt.category = l.category AND pt.item_type = l.item_type
   LEFT JOIN loppan.sell_through st  ON st.brand = l.brand AND st.category = l.category
   LEFT JOIN loppan.sell_through stc ON stc.brand IS NULL AND stc.category = l.category
   WHERE l.resolved_on IS NULL AND l.price_ore > 0
@@ -188,6 +223,7 @@ priced AS (
 scored AS (
   SELECT p.* EXCEPT (grp),
          p.level_ore * g.now_idx  AS expected_now,
+         p.type_level_ore * g.now_idx AS expected_type_now,
          p.level_ore * g.peak.idx AS expected_peak,
          g.peak.sale_month AS peak_month,
          g.peak.off AS months_to_peak
@@ -202,6 +238,9 @@ SELECT item_id, brand, category, item_type, size_code, condition, demography, p2
        CAST(ROUND(expected_peak) AS INT64) AS expected_peak_ore,
        peak_month, months_to_peak,
        ROUND(100 * price_ore / expected_now, 1) AS pct_of_expected,
+       type_n_sales,
+       CAST(ROUND(expected_type_now) AS INT64) AS expected_type_now_ore,
+       ROUND(100 * price_ore / expected_type_now, 1) AS pct_of_expected_type,
        CAST(ROUND(sell_through * expected_peak - price_ore) AS INT64) AS gross_margin_ore,
        CAST(NULL AS INT64) AS expected_profit_ore,
        IF(price_ore <= max_pct / 100 * expected_now, 'now', 'season') AS signal,

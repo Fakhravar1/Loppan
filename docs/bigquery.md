@@ -342,6 +342,11 @@ split into two parts, estimated at different levels of detail:
 - **`level`**: median sold price over the last 365 days, *with the season removed*
   (each sale divided by its month's index). It is pulled toward the category's level
   when sales are few: `(n·level_bc + k·level_c) / (n + k)`, starting at k = 20.
+- **`type level`** (2026-10-13): the same, one level finer, brand × category × item
+  type (coat, trench coat, jacket), pulled toward `level` with the same k. A Burberry coat
+  and a Burberry jacket share a category but not a price. The shortlist carries both
+  prices and both discounts (`expected_type_now_ore`, `pct_of_expected_type`) so the
+  dashboard can show them side by side; selection and ranking still use `level`.
 - **`index`**: how a season group sells in month m relative to its yearly average.
   Estimated per season group, not per brand, because brand × month would be mostly empty
   cells.

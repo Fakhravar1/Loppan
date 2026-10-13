@@ -11,7 +11,7 @@ cd "$(dirname "$0")"
 BQ=(bq --location=EU --quiet query --use_legacy_sql=false --format=none)
 TABLES=(items sweep_staging adjudication_staging circle_origin_staging runs model_params
         brand_rules kosher_brands brand_counts_staging
-        seasonal_index price_level sell_through shortlist_candidates progress_daily)
+        seasonal_index price_level price_level_type sell_through shortlist_candidates progress_daily)
 
 cleanup() {
   for t in "${TABLES[@]}"; do bq --location=EU rm -f -t "loppan._t_$t" >/dev/null 2>&1 || true; done
@@ -263,6 +263,8 @@ UNION ALL SELECT 'L1', 'A', 'C', 0,  NULL, NULL, NULL,  15000, FALSE
 UNION ALL SELECT 'L2', 'A', 'C', 0,  NULL, NULL, NULL, 150000, FALSE
 UNION ALL SELECT 'L3', 'B', 'C', 12, NULL, NULL, NULL,  18000, FALSE
 UNION ALL SELECT 'L5', 'B', 'C', 12, NULL, NULL, NULL,  40000, FALSE;
+-- A's five sales and L1 are coats; nothing else has a type
+UPDATE loppan._t_items SET item_type = 'Kappa' WHERE item_id LIKE 'As%' OR item_id = 'L1';
 EOF
 run_file model.sql 2026-10-02
 sql <<'EOF'
@@ -284,6 +286,16 @@ ASSERT (SELECT resolved FROM loppan._t_sell_through WHERE brand = 'Q' AND catego
 ASSERT (SELECT ROUND(sell_through, 4) FROM loppan._t_sell_through
         WHERE brand = 'Q' AND category = 'D') = 0.5
   AS 'below_floor counts as not sold: (2 + 20 x 0.5) / (4 + 20)';
+ASSERT (SELECT ROUND(level_ore) FROM loppan._t_price_level_type
+        WHERE brand = 'A' AND category = 'C' AND item_type = 'Kappa') = 49200
+  AS 'A coats pooled toward A in C: (5 x 30000 + 20 x 54000) / 25';
+ASSERT (SELECT AS STRUCT expected_type_now_ore, pct_of_expected_type, type_n_sales
+        FROM loppan._t_shortlist_candidates WHERE item_id = 'L1')
+     = STRUCT(49200 AS expected_type_now_ore, 30.5 AS pct_of_expected_type, 5 AS type_n_sales)
+  AS 'L1, a coat, is priced against A coats beside A in C';
+ASSERT (SELECT LOGICAL_AND(expected_type_now_ore = expected_now_ore AND type_n_sales = 0)
+        FROM loppan._t_shortlist_candidates WHERE item_id != 'L1')
+  AS 'an item with no type sales gets the brand x category price as its type price';
 ASSERT (SELECT gross_margin_ore FROM loppan._t_shortlist_candidates WHERE item_id = 'L1') = 22800
   AS 'L1 margin: 0.7 x 54000 - 15000';
 ASSERT (SELECT COUNT(*) FROM loppan._t_shortlist_candidates WHERE item_id = 'L2') = 0
