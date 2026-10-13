@@ -358,7 +358,13 @@ Each live item then gets **two signals**, which answer different questions:
 | **Bargain now**: `price / expected_sold(now)` is low | Cheap even for this month: mispriced | Buy, relist soon |
 | **Seasonal bet**: `expected_sold(peak month)` ≫ price | Cheap *because* of the season | Buy, hold until the peak month |
 
-Both are ranked by **expected profit in kronor**, because you want absolute bargains:
+Both are ranked by **discount in kronor** (2026-10-13, `discount_ore`, `discount_rank`):
+the expected sold price at the month the item would be sold, minus its price. The
+chance of selling is left out of the ranking on purpose: the aim is underpriced items
+to wear or resell on any marketplace, so the marketplace's final prices are the measure
+and `sell_through` is a column to filter on. 'now' items still rank above 'season'.
+
+Once fees and shipping are known, profit will be:
 
 ```
 expected_profit_kr = sell_through × expected_sold(target month) × (1 − venue fee)

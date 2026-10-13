@@ -185,8 +185,12 @@ FROM c;
 -- expected_profit_ore stays NULL until cost_params is filled: the README's rule is that
 -- profit is never faked. gross_margin_ore is before fees and shipping.
 -- signal: 'now' when the item is cheap right now for its brand x category (price at most
--- max_pct of expected_now); 'season' when only the seasonal bet qualifies it. The top_n
--- cap keeps every 'now' first, by gross margin, then 'season' by gross margin.
+-- max_pct of expected_now); 'season' when only the seasonal bet qualifies it.
+-- discount_ore: kronor under the expected sold price at the month the item would be sold,
+-- now for 'now', the peak month for 'season'. The ranking the dashboard shows
+-- (discount_rank, 1 = first) and the top_n cap keep every 'now' first, each signal by
+-- discount_ore. Chance of selling is not in the ranking: sell_through is a column to
+-- filter on, and gross_margin_ore still carries it for whoever wants the old order.
 
 CREATE OR REPLACE TABLE loppan.shortlist_candidates AS
 WITH months AS (
@@ -242,12 +246,16 @@ SELECT item_id, brand, category, item_type, size_code, condition, demography, p2
        CAST(ROUND(expected_type_now) AS INT64) AS expected_type_now_ore,
        ROUND(100 * price_ore / expected_type_now, 1) AS pct_of_expected_type,
        CAST(ROUND(sell_through * expected_peak - price_ore) AS INT64) AS gross_margin_ore,
+       CAST(ROUND(IF(price_ore <= max_pct / 100 * expected_now, expected_now, expected_peak)
+                  - price_ore) AS INT64) AS discount_ore,
+       ROW_NUMBER() OVER (
+         ORDER BY IF(price_ore <= max_pct / 100 * expected_now, 0, 1),
+                  IF(price_ore <= max_pct / 100 * expected_now, expected_now, expected_peak)
+                    - price_ore DESC, item_id) AS discount_rank,
        CAST(NULL AS INT64) AS expected_profit_ore,
        IF(price_ore <= max_pct / 100 * expected_now, 'now', 'season') AS signal,
        @run AS as_of
 FROM scored
 WHERE price_ore <= max_pct / 100 * expected_now
    OR sell_through * expected_peak > price_ore
-QUALIFY ROW_NUMBER() OVER (
-  ORDER BY IF(price_ore <= max_pct / 100 * expected_now, 0, 1),
-           sell_through * expected_peak - price_ore DESC) <= top_n;
+QUALIFY discount_rank <= top_n;

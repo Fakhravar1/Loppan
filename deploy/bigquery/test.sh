@@ -315,15 +315,20 @@ ASSERT (SELECT signal FROM loppan._t_shortlist_candidates WHERE item_id = 'L5') 
 ASSERT (SELECT LOGICAL_AND((signal = 'now') = (pct_of_expected <= 60))
         FROM loppan._t_shortlist_candidates)
   AS 'signal is now exactly when the price is at most 60% of expected now';
-ASSERT (SELECT gross_margin_ore FROM loppan._t_shortlist_candidates WHERE item_id = 'L5')
-     > (SELECT gross_margin_ore FROM loppan._t_shortlist_candidates WHERE item_id = 'L1')
-  AS 'fixture: the season item L5 out-earns the now item L1, so the cap test means something';
+ASSERT (SELECT discount_ore FROM loppan._t_shortlist_candidates WHERE item_id = 'L1') = 39000
+  AS 'L1 discount: 54000 - 15000, chance of selling left out';
+ASSERT (SELECT STRING_AGG(item_id ORDER BY discount_rank) FROM loppan._t_shortlist_candidates)
+     = 'L1,L3,L5'
+  AS 'ranked now first, by kronor of discount: L1 39000 before L3 ~32000, then season L5';
+ASSERT (SELECT discount_ore FROM loppan._t_shortlist_candidates WHERE item_id = 'L5')
+     > (SELECT discount_ore FROM loppan._t_shortlist_candidates WHERE item_id = 'L1')
+  AS 'fixture: the season item L5 has the larger discount, so the cap test means something';
 UPDATE loppan._t_model_params SET value = 2 WHERE rule = 'export_top_n';
 EOF
 run_file model.sql 2026-10-02
 sql <<'EOF'
 ASSERT (SELECT STRING_AGG(item_id ORDER BY item_id) FROM loppan._t_shortlist_candidates) = 'L1,L3'
-  AS 'top 2: both now items survive the cap, the higher-margin season item L5 does not';
+  AS 'top 2: both now items survive the cap, the bigger-discount season item L5 does not';
 UPDATE loppan._t_model_params SET value = 30000 WHERE rule = 'export_top_n';
 EOF
 pass "model: prior reproduced, pooling, sell-through, margin, exclusion, seasonal peak, signal, now-first cap"
