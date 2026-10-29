@@ -14,6 +14,8 @@ name: bq-daily
 #                      the day again, which is safe: every merge is idempotent. The
 #                      concurrency group queues a slot behind a run in progress,
 #                      never alongside it.
+#                      Two later slots, 13:41 and 19:17 UTC, run export mode only, so items
+#                      that sold since the morning leave the shortlist (Fynd) the same day.
 #   workflow_dispatch  any mode: daily | census (the one-off backfill) | export | origins (the
 #                      Circle-origin backlog, in chunks). force reruns a daily that
 #                      already completed today (FORCE=1 skips the guard)
@@ -26,6 +28,9 @@ on:
     - cron: "23 2 * * *"
     - cron: "47 4 * * *"
     - cron: "13 7 * * *"
+    # Export-only refreshes: drop shortlist items that sold since the morning run (bq_export.py)
+    - cron: "41 13 * * *"
+    - cron: "17 19 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -78,7 +83,7 @@ jobs:
 
       - name: Run
         env:
-          MODE: ${{ inputs.mode || 'daily' }}
+          MODE: ${{ inputs.mode || ((github.event.schedule == '41 13 * * *' || github.event.schedule == '17 19 * * *') && 'export' || 'daily') }}
           ORIGINS_MAX: ${{ inputs.origins_max || '1500' }}
           # Only a dispatch with force ticked sets it; every schedule keeps the guard.
           FORCE: ${{ inputs.force && '1' || '0' }}
