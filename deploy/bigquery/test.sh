@@ -53,12 +53,12 @@ EOF
 # ── Day 1: two items enrol ──────────────────────────────────────────────────
 sql <<EOF
 INSERT loppan._t_sweep_staging (run_date, item_id, source, present, is_for_sale, fetched_at,
-  price_ore, favourites, last_chance, brand, category, season_mask, p2p, first_offered)
+  price_ore, favourites, last_chance, brand, category, season_mask, p2p, first_offered, condition)
 VALUES
   ('$D1', 'A', 'census', TRUE, TRUE, CURRENT_TIMESTAMP(), 30000, 2, FALSE,
-   'Acme', 'Kvinna > Jackor', 12, FALSE, DATE_SUB('$D1', INTERVAL 40 DAY)),
+   'Acme', 'Kvinna > Jackor', 12, FALSE, DATE_SUB('$D1', INTERVAL 40 DAY), 'Bra'),
   ('$D1', 'B', 'new',    TRUE, TRUE, CURRENT_TIMESTAMP(), 50000, 0, FALSE,
-   'Acme', 'Kvinna > Jackor', 3, TRUE, '$D1');
+   'Acme', 'Kvinna > Jackor', 3, TRUE, '$D1', 'Bra');
 EOF
 run_file merge_sweep.sql "$D1"
 run_file merge_sweep.sql "$D1"   # the rerun must change nothing
@@ -78,31 +78,33 @@ pass "day 1: enrol, rerun is a no-op, first price, history_complete"
 # ── Day 2: a markdown, a like, a new item seen twice, a stray tracked id ─────
 sql <<EOF
 INSERT loppan._t_sweep_staging (run_date, item_id, source, present, is_for_sale, fetched_at,
-  price_ore, favourites, last_chance, brand, category, season_mask, p2p, first_offered)
+  price_ore, favourites, last_chance, brand, category, season_mask, p2p, first_offered, condition)
 VALUES
-  ('$D2', 'A', 'track',  TRUE, TRUE, CURRENT_TIMESTAMP(), 27000, 2, FALSE, NULL, NULL, NULL, NULL, NULL),
-  ('$D2', 'B', 'track',  TRUE, TRUE, CURRENT_TIMESTAMP(), 50000, 3, FALSE, NULL, NULL, NULL, NULL, NULL),
+  ('$D2', 'A', 'track',  TRUE, TRUE, CURRENT_TIMESTAMP(), 27000, 2, FALSE, NULL, NULL, NULL, NULL, NULL, NULL),
+  ('$D2', 'B', 'track',  TRUE, TRUE, CURRENT_TIMESTAMP(), 50000, 3, FALSE, NULL, NULL, NULL, NULL, NULL, NULL),
   ('$D2', 'C', 'new',    TRUE, TRUE, CURRENT_TIMESTAMP(), 19000, 0, FALSE,
-   'Acme', 'Man > Skor', 0, FALSE, '$D2'),
+   'Acme', 'Man > Skor', 0, FALSE, '$D2', 'Bra'),
   ('$D2', 'C', 'census', TRUE, TRUE, TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR), 19000, 0, FALSE,
-   'Acme', 'Man > Skor', 0, FALSE, '$D2'),
+   'Acme', 'Man > Skor', 0, FALSE, '$D2', 'Bra'),
   ('$D2', 'D', 'new',    TRUE, TRUE, CURRENT_TIMESTAMP(),  9000, 0, FALSE,
-   'Acme', 'Man > Skor', 0, FALSE, '$D2'),
+   'Acme', 'Man > Skor', 0, FALSE, '$D2', 'Bra'),
   ('$D2', 'F', 'new',    TRUE, TRUE, CURRENT_TIMESTAMP(), 25000, 1, FALSE,
-   'Acme', 'Barn > Kläder', 0, FALSE, '$D2'),
+   'Acme', 'Barn > Kläder', 0, FALSE, '$D2', 'Bra'),
   ('$D2', 'E', 'new',    TRUE, TRUE, CURRENT_TIMESTAMP(), 20000, 0, FALSE,
-   'Acme', 'Kvinna > Skor', 0, FALSE, '$D2'),
+   'Acme', 'Kvinna > Skor', 0, FALSE, '$D2', 'Bra'),
   ('$D2', 'G', 'new',    TRUE, TRUE, CURRENT_TIMESTAMP(), 30000, 0, FALSE,
-   'Tiny', 'Man > Skor', 0, FALSE, '$D2'),
+   'Tiny', 'Man > Skor', 0, FALSE, '$D2', 'Bra'),
   ('$D2', 'H', 'new',    TRUE, TRUE, CURRENT_TIMESTAMP(), 30000, 0, FALSE,
-   NULL, 'Man > Skor', 0, FALSE, '$D2'),
-  ('$D2', 'Z', 'track',  TRUE, TRUE, CURRENT_TIMESTAMP(),  1000, 0, FALSE, NULL, NULL, NULL, NULL, NULL);
+   NULL, 'Man > Skor', 0, FALSE, '$D2', 'Bra'),
+  ('$D2', 'W', 'new',    TRUE, TRUE, CURRENT_TIMESTAMP(), 30000, 0, FALSE,
+   'Acme', 'Man > Skor', 0, FALSE, '$D2', 'Acceptabelt'),
+  ('$D2', 'Z', 'track',  TRUE, TRUE, CURRENT_TIMESTAMP(),  1000, 0, FALSE, NULL, NULL, NULL, NULL, NULL, NULL);
 EOF
 run_file merge_sweep.sql "$D2"
 run_file merge_sweep.sql "$D2"
 sql <<EOF
 ASSERT (SELECT COUNT(*) FROM loppan._t_items) = 5
-  AS 'day 2: A, B, C, E, F. Duplicate C collapses; D is under the floor, G not kosher, H unbranded, Z stray';
+  AS 'day 2: A, B, C, E, F. Duplicate C collapses; D is under the floor, G not kosher, H unbranded, W Acceptabelt, Z stray';
 ASSERT (SELECT ARRAY_LENGTH(price_history) FROM loppan._t_items WHERE item_id = 'A') = 2
   AS 'A markdown appended once';
 ASSERT (SELECT price_history[OFFSET(1)].price_ore FROM loppan._t_items WHERE item_id = 'A') = 27000
@@ -119,7 +121,7 @@ ASSERT (SELECT brand FROM loppan._t_items WHERE item_id = 'A') = 'Acme'
   AS 'a track row with null attributes must not blank them';
 ASSERT (SELECT COUNTIF(updated_run = '$D2') FROM loppan._t_items) = 5 AS 'all stamped day 2';
 EOF
-pass "day 2: change-only appends, dedupe, no stray enrolment, floor + kosher on enrolment, attributes kept"
+pass "day 2: change-only appends, dedupe, no stray enrolment, floor + kosher + condition on enrolment, attributes kept"
 
 # ── Day 3: A vanishes and sold, B gets its Circle origin; gate closed, then open ──
 sql <<EOF
@@ -152,19 +154,16 @@ ASSERT (SELECT circle_origin.bought_price_ore FROM loppan._t_items WHERE item_id
   AS 'Circle origin written';
 ASSERT (SELECT circle_bought_on FROM loppan._t_items WHERE item_id = 'B') = DATE_SUB('$D3', INTERVAL 30 DAY)
   AS 'Circle purchase date written';
-ASSERT (SELECT outcome FROM loppan._t_items WHERE item_id = 'C') = 'below_floor'
-  AS 'a markdown under 150 kr closes the item (backstop: price comparison)';
-ASSERT (SELECT outcome FROM loppan._t_items WHERE item_id = 'F') = 'below_floor'
-  AS 'a fetcher-flagged item is closed without a price';
-ASSERT (SELECT price_ore FROM loppan._t_items WHERE item_id = 'C') = 19000
-  AS 'C keeps its last price at or above the floor';
-ASSERT (SELECT COUNTIF(price_ore < 15000) FROM loppan._t_items) = 0
-  AS 'no current price under 150 kr is stored';
-ASSERT (SELECT COUNT(*) FROM loppan._t_items, UNNEST(price_history) AS p
-        WHERE p.price_ore < 15000) = 0
-  AS 'no historical price under 150 kr is stored';
+ASSERT (SELECT outcome IS NULL AND resolved_on IS NULL FROM loppan._t_items WHERE item_id = 'C')
+  AS 'a markdown under 150 kr keeps a tracked item live (Arre 2026-11-03)';
+ASSERT (SELECT price_ore FROM loppan._t_items WHERE item_id = 'C') = 14000
+  AS 'C is followed under the floor, price and all';
+ASSERT (SELECT price_history[OFFSET(1)].price_ore FROM loppan._t_items WHERE item_id = 'C') = 14000
+  AS 'the sub-floor markdown is in the history';
+ASSERT (SELECT outcome IS NULL AND price_ore = 25000 FROM loppan._t_items WHERE item_id = 'F')
+  AS 'an old fetcher-flagged row closes nothing and blanks no price';
 EOF
-pass "day 3: completeness gate holds, missing is not sold, Circle origin, hard 150 kr floor"
+pass "day 3: completeness gate holds, missing is not sold, Circle origin, floor only on enrolment"
 
 sql <<EOF
 INSERT loppan._t_runs (run_date, finished_at, live_ids, fetched, completeness, resolve_allowed)
@@ -176,14 +175,12 @@ sql <<EOF
 ASSERT (SELECT outcome FROM loppan._t_items WHERE item_id = 'A') = 'sold' AS 'A resolved once the gate opens';
 ASSERT (SELECT resolved_on FROM loppan._t_items WHERE item_id = 'A') = '$D3' AS 'resolved on the run date';
 ASSERT (SELECT final_price_ore FROM loppan._t_items WHERE item_id = 'A') = 27000 AS 'final price from Parse';
-ASSERT (SELECT outcome FROM loppan._t_items WHERE item_id = 'E') = 'below_floor'
-  AS 'a final ask under 150 kr closes as below_floor';
-ASSERT (SELECT final_price_ore IS NULL FROM loppan._t_items WHERE item_id = 'E')
-  AS 'and its sub-floor final price is not stored';
-ASSERT (SELECT COUNTIF(final_price_ore < 15000) FROM loppan._t_items) = 0
-  AS 'no final price under 150 kr is stored';
-ASSERT (SELECT COUNT(*) FROM loppan._t_items WHERE resolved_on IS NULL) = 1
-  AS 'A, C, E and F left the live partition; only B is live';
+ASSERT (SELECT outcome FROM loppan._t_items WHERE item_id = 'E') = 'sold'
+  AS 'a final ask under 150 kr is a sale like any other';
+ASSERT (SELECT final_price_ore FROM loppan._t_items WHERE item_id = 'E') = 12000
+  AS 'and its final price is kept';
+ASSERT (SELECT COUNT(*) FROM loppan._t_items WHERE resolved_on IS NULL) = 3
+  AS 'A and E left the live partition; B, C and F are live';
 ASSERT (SELECT COUNT(*) FROM loppan._t_items) = 5 AS 'resolving moved rows, it did not copy them';
 EOF
 pass "day 3: gate open, resolves once, row moves partition"
@@ -262,9 +259,12 @@ FROM UNNEST(GENERATE_ARRAY(1, 2)) AS i
 UNION ALL SELECT 'L1', 'A', 'C', 0,  NULL, NULL, NULL,  15000, FALSE
 UNION ALL SELECT 'L2', 'A', 'C', 0,  NULL, NULL, NULL, 150000, FALSE
 UNION ALL SELECT 'L3', 'B', 'C', 12, NULL, NULL, NULL,  18000, FALSE
-UNION ALL SELECT 'L5', 'B', 'C', 12, NULL, NULL, NULL,  40000, FALSE;
+UNION ALL SELECT 'L5', 'B', 'C', 12, NULL, NULL, NULL,  40000, FALSE
+UNION ALL SELECT 'L6', 'A', 'C', 0,  NULL, NULL, NULL,  15000, FALSE;
 -- A's five sales and L1 are coats; nothing else has a type
 UPDATE loppan._t_items SET item_type = 'Kappa' WHERE item_id LIKE 'As%' OR item_id = 'L1';
+-- Every row is in a sellable condition except L6, a cheap A item in Acceptabelt
+UPDATE loppan._t_items SET condition = IF(item_id = 'L6', 'Acceptabelt', 'Bra') WHERE TRUE;
 EOF
 run_file model.sql 2026-10-02
 sql <<'EOF'
@@ -300,6 +300,8 @@ ASSERT (SELECT gross_margin_ore FROM loppan._t_shortlist_candidates WHERE item_i
   AS 'L1 margin: 0.7 x 54000 - 15000';
 ASSERT (SELECT COUNT(*) FROM loppan._t_shortlist_candidates WHERE item_id = 'L2') = 0
   AS 'L2 is overpriced and excluded';
+ASSERT (SELECT COUNT(*) FROM loppan._t_shortlist_candidates WHERE item_id = 'L6') = 0
+  AS 'Acceptabelt never reaches the shortlist (Arre 2026-11-03)';
 ASSERT (SELECT peak_month FROM loppan._t_shortlist_candidates WHERE item_id = 'L3')
      = (SELECT sale_month FROM loppan.seasonal_prior
         WHERE season_group = 'cold' ORDER BY seasonal_index DESC LIMIT 1)

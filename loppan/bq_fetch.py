@@ -39,6 +39,10 @@ RESOLVE_GATE = 0.995      # docs/bigquery.md §3 change 3
 # The hard price floor (docs/bigquery.md §12): no price under it is ever written.
 # Read from loppan.brand_rules at run time; this is only the fallback.
 FLOOR_DEFAULT_KR = 150.0
+# Arre 2026-11-03: only these conditions enrol; Acceptabelt and Dåligt never do. Also in
+# merge_sweep.sql (backstop) and model.sql (the shortlist).
+CONDITIONS = ("Nytt", "Mycket bra", "Bra")
+CONDITION_FILTER = "(" + " OR ".join(f'metadata.condition:"{c}"' for c in CONDITIONS) + ")"
 FLOOR_DEFAULT_ORE = int(FLOOR_DEFAULT_KR * 100)
 
 # Every request here answers in well under a second (p90 0.3 s locally, 1.1 s on
@@ -213,23 +217,22 @@ def sweep_row(run_date: str, item_id: str, source: str, present: bool,
     """One sweep_staging row, every column present, in schema order (below_floor
     is appended by an ALTER, so it comes last).
 
-    The floor is applied here, so no row can carry a price under it. A current
-    price under the floor sets below_floor and writes neither price; merge_sweep.sql
-    then closes the item. An old price under it alone is dropped, nothing else.
-    Census and new never get this far with a price under the floor: an item under
-    it gets no row at all (crawl_to_rows).
+    The floor only decides what enrols (Arre 2026-11-03): census and new never get
+    this far with a price under it, since such an item gets no row at all
+    (crawl_to_rows). A tracked item keeps its price wherever it goes, so a find marked
+    down under the floor stays tracked and on Fynd. below_floor is then always false;
+    the column stays for the history it already holds.
     """
     state = state_of(hit) if hit else NO_STATE
     attrs = attributes_of(hit) if (hit and attributes) else NO_ATTRIBUTES
     price, old = state["price_ore"], state["old_price_ore"]
-    below = price is not None and price < floor_ore
-    if below or (old is not None and old < floor_ore):
+    if source != "track" and old is not None and old < floor_ore:   # an enrolling row stores nothing under the floor
         old = None
     return {"run_date": run_date, "item_id": item_id, "source": source,
             "present": present, "is_for_sale": state["is_for_sale"],
-            "fetched_at": fetched_at, "price_ore": None if below else price,
+            "fetched_at": fetched_at, "price_ore": price,
             "old_price_ore": old, "favourites": state["favourites"],
-            "last_chance": state["last_chance"], **attrs, "below_floor": below}
+            "last_chance": state["last_chance"], **attrs, "below_floor": False}
 
 
 # ---------------------------------------------------------------- files
@@ -337,7 +340,7 @@ def track(ids: list[str], out: NDJSON, run_date: str, full: bool = False,
                     if gone is not None:
                         gone.append(item_id)
                 row = sweep_row(run_date, item_id, "track", True, at, got, full, floor_ore)
-                below_floor += row["below_floor"]
+                below_floor += row["price_ore"] is not None and row["price_ore"] < floor_ore   # tracked on, counted for the summary
                 out.write(row)
         # What was not answered, rebuilt from the chunk heads; asked once more.
         chunks = [todo[i:i + 100] for i in range(0, len(todo), 100)]
@@ -400,7 +403,8 @@ def crawl_to_rows(crawl: bq_shapes.Crawl, out: NDJSON, run_date: str, source: st
     of other brands, and unbranded ones, are counted and dropped. The price floor is
     in the query; an item under it, or with no price, is counted and gets no row."""
     seen: set[str] = set()
-    tally = {"duplicates": 0, "dropped_by_brand": 0, "unbranded": 0, "below_floor": 0}
+    tally = {"duplicates": 0, "dropped_by_brand": 0, "unbranded": 0, "below_floor": 0,
+             "worn": 0}
 
     def on_hits(hits):
         at = utc_now()
@@ -413,6 +417,9 @@ def crawl_to_rows(crawl: bq_shapes.Crawl, out: NDJSON, run_date: str, source: st
             price = _amount(h, "price_SE", "amount")
             if price is None or price < floor_ore:
                 tally["below_floor"] += 1
+                continue
+            if (h.get("metadata") or {}).get("condition") not in CONDITIONS:   # backstop for the query filter
+                tally["worn"] += 1
                 continue
             brand = (h.get("metadata") or {}).get("brand")
             if not brand:
@@ -459,8 +466,8 @@ def floor_from_bq() -> float | None:
 def price_floor(a) -> tuple[float, str]:
     """The hard price floor in kr, and where it came from: --min-price-kr, else
     loppan.brand_rules, else the default. One source for track, census and new.
-    Census and new write no row for an item under it; track flags a tracked item
-    marked down under it as below_floor, without its price (§12)."""
+    Census and new write no row for an item under it; a tracked item marked down
+    under it keeps being tracked, price and all (Arre 2026-11-03)."""
     if a.min_price_kr is not None:
         return a.min_price_kr, "--min-price-kr"
     v = floor_from_bq()
@@ -472,11 +479,12 @@ def price_floor(a) -> tuple[float, str]:
 
 
 def search_crawl(a, first_dim: bq_shapes.Dim, source: str) -> int:
-    """Shared by census and new: live, in scope, at or above the price floor.
-    price_SE.amount is öre (it is pricing.amount x 100, checked 2026-10-02)."""
+    """Shared by census and new: live, in scope, at or above the price floor, and in
+    an allowed condition (CONDITIONS). price_SE.amount is öre (it is pricing.amount
+    x 100, checked 2026-10-02)."""
     floor_kr, floor_src = price_floor(a)
     floor_ore = kr_to_ore(floor_kr)
-    base = f"isForSale:true AND price_SE.amount>={floor_ore}"
+    base = f"isForSale:true AND price_SE.amount>={floor_ore} AND {CONDITION_FILTER}"
     dims = [first_dim, bq_shapes.Dim("price_SE.amount", floor_ore, 10 ** 9)]
     crawl = bq_shapes.Crawl(base, bq_shapes.scope(a.categories), dims, HIT_ATTRS,
                             max_leaves=a.max_leaves)

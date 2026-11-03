@@ -752,6 +752,14 @@ daily:   fetch ≥150 kr ──► sweep_staging ──► merge_sweep enrols an
   `kosher.sql` run before the census. An empty list enrols nothing, which fails safe.
 - `brand_exclusions` stays for naming any brand to keep out regardless.
 
+**Changed 2026-11-03 (Arre): the floor only decides what enrols.** A tracked item marked
+down under 150 kr stays tracked, with its price, so a find stays on Fynd; its final price
+is kept whatever it is, and nothing new closes as `below_floor` (older rows keep it).
+New items also enrol only in **Nytt, Mycket bra or Bra**: the fetch query filters on
+`metadata.condition`, `merge_sweep.sql` checks it again, and `model.sql` keeps any older
+Acceptabelt or Dåligt item off the shortlist. The paragraphs below describe the rule as it
+was from 2026-10-02 to 2026-11-03.
+
 **The hard price floor (2026-10-02): no asking price under 150 kr is ever stored.**
 `min_price_kr` = 150, separate from the kosher list. An item under it never enrols.
 When a markdown takes a tracked item under it, the fetcher sends no price

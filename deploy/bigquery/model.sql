@@ -153,8 +153,8 @@ LEFT JOIN loppan.price_level pl  ON pl.brand = t.brand AND pl.category = t.categ
 LEFT JOIN loppan.price_level plc ON plc.brand IS NULL AND plc.category = t.category;
 
 -- ─── sell_through ───────────────────────────────────────────────────────────
--- The share that sold at or above the floor. below_floor counts as not sold: it was
--- marked down past 150 kr without selling, which is what a reseller needs to know.
+-- The share that sold. below_floor (rows closed before 2026-11-03, when a markdown past
+-- 150 kr ended tracking) counts as not sold; since then such items are tracked to the end.
 -- 'unknown' outcomes are left out of both sides rather than counted as either.
 
 CREATE OR REPLACE TABLE loppan.sell_through AS
@@ -223,6 +223,7 @@ priced AS (
   LEFT JOIN loppan.sell_through st  ON st.brand = l.brand AND st.category = l.category
   LEFT JOIN loppan.sell_through stc ON stc.brand IS NULL AND stc.category = l.category
   WHERE l.resolved_on IS NULL AND l.price_ore > 0
+    AND l.condition IN ('Nytt', 'Mycket bra', 'Bra')      -- Arre 2026-11-03: no Acceptabelt or Dåligt on Fynd
 ),
 scored AS (
   SELECT p.* EXCEPT (grp),

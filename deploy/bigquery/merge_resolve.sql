@@ -1,9 +1,6 @@
 -- Daily step 7 (docs/bigquery.md §5): Circle origins, then Parse's verdicts.
 -- Parameter: @run DATE. Runs after merge_sweep.sql and the adjudication fetch.
 
-DECLARE floor_ore INT64 DEFAULT CAST(
-  (SELECT value FROM loppan.brand_rules WHERE rule = 'min_price_kr') * 100 AS INT64);
-
 -- Circle purchase prices for live p2p items that lack one. First, so an item that
 -- resolves in this same run still gets the price it was bought at.
 MERGE loppan.items t
@@ -37,11 +34,10 @@ USING (
   QUALIFY ROW_NUMBER() OVER (PARTITION BY a.item_id ORDER BY a.adjudicated_at DESC) = 1
 ) s
 ON t.item_id = s.item_id AND t.resolved_on IS NULL
--- Parse's last ask can be under the floor if a markdown crossed it between runs. The
--- hard filter (§12) stores no asking price under 150 kr, so such an item closes as
--- below_floor with no final price: it did not sell at or above the floor.
+-- Since 2026-11-03 (Arre) a tracked item is followed under the floor too, so its final
+-- ask is kept whatever it is and the outcome is Parse's. Older rows keep below_floor.
 WHEN MATCHED THEN UPDATE SET
-  outcome         = IF(s.final_price_ore < floor_ore, 'below_floor', s.outcome),
+  outcome         = s.outcome,
   resolved_on     = @run,
-  final_price_ore = IF(s.final_price_ore < floor_ore, NULL, s.final_price_ore),
+  final_price_ore = s.final_price_ore,
   updated_run     = @run;
