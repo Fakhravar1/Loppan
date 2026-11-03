@@ -219,7 +219,8 @@ class Floor(unittest.TestCase):
                 # at the floor, but its old price is under it: kept, old price dropped
                 edge = dict(HIT, objectID="edge", price_SE={"amount": 15000},
                             priceDrop_SE={"oldPrice": {"amount": 14000}})
-                on_hits([HIT, cheap, HIT, unpriced, edge])
+                worn = dict(HIT, objectID="worn", metadata=dict(HIT["metadata"], condition="Acceptabelt"))
+                on_hits([HIT, cheap, HIT, unpriced, edge, worn])
                 return {"complete": True}
         for source in ("census", "new"):
             with tempfile.TemporaryDirectory() as d:
@@ -228,7 +229,7 @@ class Floor(unittest.TestCase):
                 res = bq_fetch.crawl_to_rows(FakeCrawl(), out, "2026-10-02", source, None, 15000)
                 out.close()
                 rows = read_rows(path)
-            self.assertEqual((out.rows, res["below_floor"], res["duplicates"]), (2, 2, 1))
+            self.assertEqual((out.rows, res["below_floor"], res["duplicates"], res["worn"]), (2, 2, 1, 1))
             self.assertEqual([r["item_id"] for r in rows], ["abc123", "edge"])
             self.assertEqual((rows[1]["price_ore"], rows[1]["old_price_ore"]), (15000, None))
             self.assertEqual([r["below_floor"] for r in rows], [False, False])
@@ -256,7 +257,9 @@ class Floor(unittest.TestCase):
         finally:
             bq_fetch.algolia.get_objects_parallel = real
 
-    def test_track_flags_a_markdown_under_the_floor_without_its_price(self):
+    def test_track_keeps_a_markdown_under_the_floor(self):
+        """Arre 2026-11-03: the floor only decides what enrols. A tracked item marked down
+        under it keeps being tracked, price and old price included, so it stays on Fynd."""
         state = {"isForSale": True, "lastChance": True, "favouriteCount": 7}
         rows, summary = self.run_track_cli({
             "under": dict(state, price_SE={"amount": 14900},
@@ -271,39 +274,38 @@ class Floor(unittest.TestCase):
         by_id = {r["item_id"]: r for r in rows}
         under = by_id["under"]
         self.assertEqual((under["present"], under["below_floor"], under["price_ore"],
-                          under["old_price_ore"]), (True, True, None, None))
+                          under["old_price_ore"]), (True, False, 14900, 20000))
         self.assertEqual((under["favourites"], under["last_chance"], under["is_for_sale"]),
                          (7, True, True))
-        self.assertEqual((by_id["at"]["price_ore"], by_id["at"]["old_price_ore"],
-                          by_id["at"]["below_floor"]), (15000, None, False))
-        self.assertEqual((by_id["over"]["price_ore"], by_id["over"]["old_price_ore"],
-                          by_id["over"]["below_floor"]), (30000, 35000, False))
+        self.assertEqual((by_id["at"]["price_ore"], by_id["at"]["old_price_ore"]), (15000, 14000))
+        self.assertEqual((by_id["over"]["price_ore"], by_id["over"]["old_price_ore"]), (30000, 35000))
         self.assertEqual((by_id["gone"]["present"], by_id["gone"]["below_floor"]), (False, False))
         self.assertEqual((by_id["unpriced"]["price_ore"], by_id["unpriced"]["below_floor"]),
                          (None, False))
-        self.assertEqual(summary["measured"]["below_floor"], 1)
+        self.assertFalse(any(r["below_floor"] for r in rows))
+        self.assertEqual(summary["measured"]["below_floor"], 1)       # counted, not dropped
         self.assertEqual(summary["min_price_kr"], {"value": 150.0, "source": "--min-price-kr"})
 
-    def test_track_output_holds_no_price_under_15000_ore(self):
-        """Scan the NDJSON itself: every price-like value, on every row."""
+    def test_track_writes_every_price(self):
+        """Scan the NDJSON itself: a tracked price is written whatever it is."""
         answers = {f"id{n}": {"isForSale": True, "price_SE": {"amount": 100 * n},
                               "priceDrop_SE": {"oldPrice": {"amount": 100 * n + 5000}}}
                    for n in range(0, 400, 7)}
         rows, summary = self.run_track_cli(answers)        # no bq: the default, 150 kr
         self.assertEqual(summary["min_price_kr"], {"value": 150.0, "source": "default"})
         self.assertEqual(len(rows), len(answers))
-        self.assertEqual(prices_under(rows, 15000), [])
-        self.assertEqual(sum(r["below_floor"] for r in rows),
-                         sum(1 for n in range(0, 400, 7) if 100 * n < 15000))
+        self.assertEqual({r["item_id"]: r["price_ore"] for r in rows},
+                         {k: v["price_SE"]["amount"] for k, v in answers.items()})
+        self.assertFalse(any(r["below_floor"] for r in rows))
 
-    def test_track_reads_the_floor_where_census_and_new_do(self):
+    def test_track_ignores_the_floor_value(self):
         answers = {"x": {"isForSale": True, "price_SE": {"amount": 18000}}}
         real = bq_fetch.floor_from_bq
         try:
             bq_fetch.floor_from_bq = lambda: 200.0
             rows, summary = self.run_track_cli(answers)
             self.assertEqual(summary["min_price_kr"]["source"], "loppan.brand_rules.min_price_kr")
-            self.assertEqual((rows[0]["below_floor"], rows[0]["price_ore"]), (True, None))
+            self.assertEqual((rows[0]["below_floor"], rows[0]["price_ore"]), (False, 18000))
             rows, summary = self.run_track_cli(answers, "--min-price-kr", "150")
             self.assertEqual((rows[0]["below_floor"], rows[0]["price_ore"]), (False, 18000))
         finally:
