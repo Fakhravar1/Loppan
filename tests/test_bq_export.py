@@ -49,8 +49,8 @@ class Export(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = pathlib.Path(d, "c.json")
             path.write_text(json.dumps(cands), encoding="utf-8")
-            images = {"live": ["a/1.jpg"], "sold": None}
-            with mock.patch.object(bq_export, "image_paths_for", return_value=images), \
+            index = {"live": {"image_paths": ["a/1.jpg"], "favourites": 7}, "sold": None}
+            with mock.patch.object(bq_export, "index_fields_for", return_value=index), \
                  mock.patch.object(bq_export.db, "rpc", return_value=1) as rpc, \
                  mock.patch.object(bq_export.db, "upsert", return_value=1) as upsert, \
                  mock.patch.object(sys, "argv", ["bq_export", "--candidates", str(path)]):
@@ -58,6 +58,7 @@ class Export(unittest.TestCase):
         staged = upsert.call_args.args[1]
         self.assertEqual([r["item_id"] for r in staged], ["live"])
         self.assertEqual(staged[0]["image_paths"], ["a/1.jpg"])
+        self.assertEqual(staged[0]["favourites"], 7)
         self.assertEqual(staged[0]["signal"], "season")
         self.assertEqual([c.args[0] for c in rpc.call_args_list],
                          ["clear_shortlist_staging", "promote_shortlist"])
