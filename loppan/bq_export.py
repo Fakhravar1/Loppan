@@ -6,10 +6,11 @@
     bq query --format=json 'select * from loppan.shortlist_candidates'
 
 Three steps:
-  1. Attach image paths for these ids only, from the search index (100 ids a request,
-     `images` field only). Images are not stored in BigQuery (schema.md, "Deliberately
-     not collected"). An id the index no longer returns has sold since the morning
-     run, and is dropped rather than shown.
+  1. Attach image paths and the like count for these ids only, from the search index
+     (100 ids a request, `images` and `favouriteCount` only). Images are not stored in
+     BigQuery (schema.md, "Deliberately not collected"); the like count is read here so
+     the dashboard shows it as of the export, not the morning sweep. An id the index no
+     longer returns has sold since the morning run, and is dropped rather than shown.
   2. Load the rows into shortlist_staging in batches.
   3. promote_shortlist() swaps them into shortlist in one transaction. It refuses an
      empty swap, so a failed export never blanks the dashboard.
@@ -75,12 +76,17 @@ def image_paths(urls) -> list[str]:
     return out
 
 
-def image_paths_for(ids: list[str]) -> dict[str, list[str] | None]:
-    """item_id -> image paths, or None when the index no longer has the item."""
-    out: dict[str, list[str] | None] = {}
-    for chunk, results in algolia.get_objects_parallel(ids, attributes=["images"]):
+def index_fields_for(ids: list[str]) -> dict[str, dict | None]:
+    """item_id -> {image_paths, favourites}, or None when the index no longer has the item."""
+    out: dict[str, dict | None] = {}
+    for chunk, results in algolia.get_objects_parallel(ids, attributes=["images", "favouriteCount"]):
         for item_id, obj in zip(chunk, results):
-            out[item_id] = None if obj is None else image_paths(obj.get("images"))
+            if obj is None:
+                out[item_id] = None
+                continue
+            favs = obj.get("favouriteCount")
+            out[item_id] = {"image_paths": image_paths(obj.get("images")),
+                            "favourites": None if favs is None else int(favs)}
     return out
 
 
@@ -97,10 +103,10 @@ def main() -> int:
         print("no candidates: leaving the current shortlist in place", file=sys.stderr)
         return 0
 
-    images = image_paths_for([r["item_id"] for r in rows])
-    gone = [r["item_id"] for r in rows if images.get(r["item_id"]) is None]
-    rows = [dict(r, image_paths=images[r["item_id"]]) for r in rows
-            if images.get(r["item_id"]) is not None]
+    index = index_fields_for([r["item_id"] for r in rows])
+    gone = [r["item_id"] for r in rows if index.get(r["item_id"]) is None]
+    rows = [dict(r, **index[r["item_id"]]) for r in rows
+            if index.get(r["item_id"]) is not None]
 
     db.rpc("clear_shortlist_staging")
     staged = db.upsert("shortlist_staging", rows, on_conflict="item_id")
@@ -109,6 +115,7 @@ def main() -> int:
     summary = {"candidates": len(raw), "sold_since_run": len(gone), "staged": staged,
                "promoted": promoted,
                "with_images": sum(1 for r in rows if r["image_paths"]),
+               "with_favourites": sum(1 for r in rows if r["favourites"] is not None),
                "seconds": round(time.time() - t0, 1)}
     text = json.dumps(summary, indent=1)
     print(text)
